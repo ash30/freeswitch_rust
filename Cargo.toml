@@ -1,0 +1,5 @@
+[workspace]
+
+members = [
+    "freeswitch_sys",
+]
