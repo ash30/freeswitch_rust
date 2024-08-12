@@ -5,7 +5,7 @@ let pkgs = import (builtins.fetchTarball {
   url = "https://github.com/nixos/nixpkgs/archive/154bcb95ad51bc257c2ce4043a725de6ca700ef6.tar.gz";
   # Hash obtained using `nix-prefetch-url --unpack <url>`
   sha256 = "0gv8wgjqldh9nr3lvpjas7sk0ffyahmvfrz5g4wd8l2r15wyk67f";
-}) { localSystem = "aarch64-darwin"; };
+}) { localSystem = "aarch64-darwin"; overlays = [(import ./nix/bindgen.nix)]; };
 freeswitch =  (pkgs.callPackage ./ext/freeswitch { });
 in
 pkgs.mkShell rec {
@@ -24,7 +24,6 @@ pkgs.mkShell rec {
     pkgs.openssl
     pkgs.cargo-watch
     pkgs.darwin.libiconv
-
     freeswitch 
   ];
 
