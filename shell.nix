@@ -6,7 +6,8 @@ let pkgs = import (builtins.fetchTarball {
   # Hash obtained using `nix-prefetch-url --unpack <url>`
   sha256 = "0gv8wgjqldh9nr3lvpjas7sk0ffyahmvfrz5g4wd8l2r15wyk67f";
 }) { localSystem = "aarch64-darwin"; overlays = [(import ./nix/bindgen.nix)]; };
-freeswitch =  (pkgs.callPackage ./ext/freeswitch { });
+
+freeswitch =  (pkgs.callPackage ../freeswitch { });
 in
 pkgs.mkShell rec {
   nativeBuildInputs = [

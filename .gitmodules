@@ -1,4 +1,0 @@
-[submodule "ext/freeswitch"]
-	path = ext/freeswitch
-	url = https://github.com/ash30/freeswitch
-	branch = nix
