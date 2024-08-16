@@ -21,7 +21,9 @@ fn main() {
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
 	    .allowlist_item("^switch_core_session.*")
+	    .allowlist_item("^switch_core_perform_session.*")
 	    .allowlist_item("^switch_log.*")
+        .allowlist_item("^switch_core_media_bug.*")
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.
