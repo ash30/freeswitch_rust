@@ -1,53 +1,93 @@
+            
+            
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
+use std::ffi::c_void;
+use std::ops::{Deref, DerefMut};
+use std::ptr;
 use std::{ffi::CString, marker::PhantomData};
-use std::os::raw::c_void;
-//use std::ffi::c_int;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-struct SessionData<T> {
-   ptr: *mut c_void,
-   session_id: SessionUUID,
-   t: PhantomData<T>
+pub struct FSHandle<T>{ 
+    ptr: *mut T,
 }
 
-impl<T> SessionData<T> {
-    fn new(p:*mut c_void, session_id:SessionUUID) -> Self {
-        Self {
-            ptr:p,
-            session_id,
-            t:PhantomData
+pub struct FSObject<'a, T> {
+    ptr: *mut T,
+    lifetime: PhantomData<&'a T>
+}
+
+// =====
+pub type MediaBugHandle = FSHandle<switch_media_bug_t>;
+pub type MediaBug<'a> = FSObject<'a,switch_media_bug_t>;
+impl <'a> MediaBug<'a> {
+
+    unsafe extern "C" fn callback<F>(arg1: *mut switch_media_bug_t, arg2: *mut ::std::os::raw::c_void, arg3: switch_abc_type_t) -> switch_bool_t 
+    where F: FnMut(MediaBug, switch_abc_type_t) -> bool,
+    {
+        let callback_ptr = arg2 as *mut F;
+        let callback = &mut *callback_ptr;
+        let bug = MediaBug { ptr:arg1, lifetime: PhantomData {} };
+
+        let res = if callback(bug, arg3) {
+            switch_bool_t_SWITCH_TRUE
+        } else {
+            switch_bool_t_SWITCH_FALSE
+        };
+        
+        if arg3 == switch_abc_type_t_SWITCH_ABC_TYPE_CLOSE {
+            let _ = Box::from_raw(arg2);
+        }
+        res
+    }
+
+    pub fn get_session(&self) -> Session {
+        unsafe {
+            let ptr = crate::switch_core_media_bug_get_session(self.ptr);
+            Session { ptr, lifetime: PhantomData {} }
         }
     }
 }
 
-enum SessionError {
+// =====
+
+pub enum SessionError {
     AllocationError
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct SessionUUID(String);
+pub struct SessionUUID(String);
 
-struct Session {
-    ptr: *mut switch_core_session_t,
-    id: SessionUUID
+pub type Session<'a> = FSObject<'a, switch_core_session_t>;
+
+// ===========
+pub struct LocateGuard<'a> {
+    s: Session<'a> 
 }
 
-impl Drop for Session {
+impl<'a> Drop for LocateGuard<'a> {
     fn drop(&mut self) {
         // SAFETY: In theory this is safe because ptr is valid since we located Session
         // to create Session struct 
         unsafe { 
-            if !self.ptr.is_null() { switch_core_session_rwunlock(self.ptr) }
+            if !self.s.ptr.is_null() { switch_core_session_rwunlock(self.s.ptr) }
         }
     }
 }
 
-impl Session {
-    pub fn locate(id:&SessionUUID) -> Option<Self> {
+impl<'a> Deref for LocateGuard<'a> {
+    type Target = Session<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.s
+    }
+}
+
+
+impl<'a> Session<'a> {
+    pub fn locate(id:&SessionUUID) -> Option<LocateGuard<'static>> {
         let file = CString::new(std::file!()).unwrap();
         let line = std::line!().try_into().unwrap_or(0);
         let func = CString::new("").unwrap();
@@ -58,12 +98,15 @@ impl Session {
             let ptr = switch_core_session_perform_locate(s.as_ptr(), file.as_ptr(), func.as_ptr(), line);
             if ptr.is_null() { None }
             else { 
-               Some(Session { ptr, id: id.clone() })
+                let s = Session { ptr, lifetime:PhantomData {} };
+                Some(LocateGuard { s })
             }
         }
     }
+}
 
-    pub fn insert<T:Sized>(&self, data:T) -> Result<SessionData<T>, SessionError> {
+impl<'a> Session<'a> {
+    pub fn insert<T:Sized + 'static>(&self, data:T) -> Result<FSHandle<T>, SessionError> {
             let file = CString::new(std::file!()).unwrap();
             let line = std::line!().try_into().unwrap_or(0);
             let func = CString::new("").unwrap();
@@ -78,8 +121,8 @@ impl Session {
             );
             if !ptr.is_null(){
                 let t = &mut*(ptr as *mut T);
-                std::mem::replace(t, data);
-                Ok(SessionData::new(ptr, self.id.to_owned()))
+                _ = std::mem::replace(t, data);
+                Ok(FSHandle{ ptr: ptr as *mut T })
             }
             else {
                 Err(SessionError::AllocationError)
@@ -87,24 +130,43 @@ impl Session {
         }
     }
 
-    pub fn get<'a,T>(&self, k:SessionData<T>) -> Option<&'a T> {
-        if k.ptr.is_null() { return None };
-        if k.session_id != self.id { return None };
-        // SAFETY: 
-        unsafe { 
-            let r = &*(k.ptr as *mut T);
-            Some(r)
-        }
+    pub fn get<T>(&self, k:FSHandle<T>) -> Option<FSObject<T>> {
+        // This should have same life time as &self right?
+        Some(FSObject { ptr:k.ptr, lifetime:PhantomData{} })
     }
 
-    pub fn get_mut<'a,T>(&self, k:SessionData<T>) -> Option<&'a mut T> {
-        if k.ptr.is_null() { return None };
-        if k.session_id != self.id { return None };
+    pub fn add_media_bug<F>(&self, name:String, target:String, flags: switch_media_bug_flag_t, callback:F) 
+        -> Result<MediaBugHandle, SessionError>
+        where F: FnMut(MediaBug, switch_abc_type_t) -> bool + 'static + Send,
+    {
+        let data = Box::into_raw(Box::new(callback));
+        let func = CString::new(name).unwrap();
+        let target = CString::new(target).unwrap();
+
+        let mut bug: *mut switch_media_bug = ptr::null_mut();
+
         // SAFETY: 
-        unsafe { 
-            let r = &mut*(k.ptr as *mut T);
-            Some(r)
+        unsafe {
+            let res = crate::switch_core_media_bug_add(
+                self.ptr, 
+                func.as_ptr(),
+                target.as_ptr(),
+                Some(MediaBug::callback::<F>),
+                data as *mut c_void,
+                0,
+                flags, 
+                &mut bug as *mut *mut switch_media_bug_t
+            );
+
+            if res == switch_status_t_SWITCH_STATUS_SUCCESS && !bug.is_null() {
+                let h = MediaBugHandle { ptr: bug };
+                Ok(h)
+            }
+            else {
+                Err(SessionError::AllocationError)
+            }
         }
     }
 }
+
 
