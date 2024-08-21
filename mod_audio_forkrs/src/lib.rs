@@ -30,12 +30,14 @@ fn api_main(command:ModSubcommand) -> Result<(),Error>{
             let data = Private { foo : 1};
             let handle = s.insert(data).map_err(|_|Error::InvalidArguments)?;
 
-            // Bug Callback will run on session thread, so any closure vars must be Send 
+            // Closures with captured state simplifies user data retrieval
+            // Bug Callback will run on session thread/different thread, so any closure vars must be Send (assumedly)
             let bug = s.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| { 
+
                 let mut s = bug.get_session();
 
                 // Session data can only be retrieved from Sesssion Object which implies you have
-                // lock, hence access is naturally sync 
+                // lock (again assumedly...)
                 let mut d = s.get_mut(&handle).unwrap();
                 d.as_mut().foo = 2;
 
@@ -50,7 +52,6 @@ fn api_main(command:ModSubcommand) -> Result<(),Error>{
             });
         },
         ModSubcommand::Stop { session } => {},
-        _ => {}
     };
     Ok(())
 }
