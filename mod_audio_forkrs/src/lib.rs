@@ -4,9 +4,12 @@ use clap::value_parser;
 use clap::{Command, Arg};
 use freeswitch_sys::switch_abc_type_t;
 use freeswitch_sys::Session;
+use tokio::runtime::Runtime;
+use std::sync::OnceLock;
 
 pub enum Error {
-    InvalidArguments
+    InvalidArguments,
+    RuntimeInit
 }
 
 #[repr(C)]
@@ -17,6 +20,17 @@ struct Private {
 pub enum ModSubcommand {
     Start { session:String, url : String },
     Stop { session: String },
+}
+
+static RT: OnceLock<Runtime> = OnceLock::new();
+
+// Create async runtime at module load 
+fn load() {
+    let rt = RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap()
+    });
 }
 
 fn api_main(command:ModSubcommand) -> Result<(),Error>{
@@ -30,10 +44,19 @@ fn api_main(command:ModSubcommand) -> Result<(),Error>{
             let data = Private { foo : 1};
             let handle = s.insert(data).map_err(|_|Error::InvalidArguments)?;
 
+            let (tx,rx) = tokio::sync::mpsc::unbounded_channel();
+            let rt = RT.get().ok_or(Error::RuntimeInit)?;
+            rt.spawn(async move {
+                // Setup WS 
+                loop {
+                    let Some(frame) = rx.recv().await else { break };
+                    // send to ws 
+                }
+            });
+
             // Closures with captured state simplifies user data retrieval
             // Bug Callback will run on session thread/different thread, so any closure vars must be Send (assumedly)
             let bug = s.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| { 
-
                 let mut s = bug.get_session();
 
                 // Session data can only be retrieved from Sesssion Object which implies you have
@@ -45,7 +68,10 @@ fn api_main(command:ModSubcommand) -> Result<(),Error>{
                 match abc_type {
                     switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
                     switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {}
-                    switch_abc_type_t::SWITCH_ABC_TYPE_READ => {}
+                    switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
+                        // Buffer and Send 
+                        //tx.send(message)
+                    }
                     _ => {}
                 };
                 true
