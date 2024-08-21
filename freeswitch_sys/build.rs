@@ -24,6 +24,7 @@ fn main() {
 	    .allowlist_item("^switch_core_perform_session.*")
 	    .allowlist_item("^switch_log.*")
         .allowlist_item("^switch_core_media_bug.*")
+        .newtype_enum("switch_abc_type_t")
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.

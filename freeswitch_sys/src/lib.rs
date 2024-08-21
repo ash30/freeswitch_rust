@@ -1,5 +1,3 @@
-            
-            
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
@@ -14,12 +12,39 @@ include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 pub struct FSHandle<T>{ 
     ptr: *mut T,
 }
+unsafe impl<T> Send for FSHandle<T> where T:Send {}
 
 pub struct FSObject<'a, T> {
     ptr: *mut T,
     lifetime: PhantomData<&'a T>
 }
 
+pub struct FSObjectMut<'a, T> {
+    ptr: *mut T,
+    lifetime: PhantomData<&'a mut T>
+}
+
+// =====
+
+pub struct SessionData<T>(T);
+
+unsafe impl<T> Send for SessionData<T> where T:Send {}
+
+impl <'a,T> AsRef<T> for FSObject<'a,SessionData<T>> {
+    fn as_ref(&self) -> &T {
+        unsafe { 
+            &((*self.ptr).0)
+        }
+    }
+}
+
+impl <'a,T> AsMut<T> for FSObjectMut<'a,SessionData<T>> {
+    fn as_mut(&mut self) -> &mut T {
+        unsafe { 
+            &mut((*self.ptr).0)
+        }
+    }
+}
 // =====
 pub type MediaBugHandle = FSHandle<switch_media_bug_t>;
 pub type MediaBug<'a> = FSObject<'a,switch_media_bug_t>;
@@ -38,7 +63,7 @@ impl <'a> MediaBug<'a> {
             switch_bool_t_SWITCH_FALSE
         };
         
-        if arg3 == switch_abc_type_t_SWITCH_ABC_TYPE_CLOSE {
+        if arg3 == switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE{
             let _ = Box::from_raw(arg2);
         }
         res
@@ -87,11 +112,11 @@ impl<'a> Deref for LocateGuard<'a> {
 
 
 impl<'a> Session<'a> {
-    pub fn locate(id:&SessionUUID) -> Option<LocateGuard<'static>> {
+    pub fn locate(id:&str) -> Option<LocateGuard<'static>> {
         let file = CString::new(std::file!()).unwrap();
         let line = std::line!().try_into().unwrap_or(0);
         let func = CString::new("").unwrap();
-        let s:CString = CString::new(id.0.to_owned()).unwrap();
+        let s:CString = CString::new(id.to_owned()).unwrap();
 
         // SAFETY: 
         unsafe {
@@ -106,7 +131,7 @@ impl<'a> Session<'a> {
 }
 
 impl<'a> Session<'a> {
-    pub fn insert<T:Sized + 'static>(&self, data:T) -> Result<FSHandle<T>, SessionError> {
+    pub fn insert<T:Sized + 'static>(&self, data:T) -> Result<FSHandle<SessionData<T>>, SessionError> {
             let file = CString::new(std::file!()).unwrap();
             let line = std::line!().try_into().unwrap_or(0);
             let func = CString::new("").unwrap();
@@ -114,15 +139,16 @@ impl<'a> Session<'a> {
         // SAFETY: 
         unsafe {
             let ptr = crate::switch_core_perform_session_alloc(
-                self.ptr, std::mem::size_of::<T>(), 
+                self.ptr, std::mem::size_of::<SessionData<T>>(), 
                 file.as_ptr(),
                 func.as_ptr(),
                 line
             );
             if !ptr.is_null(){
-                let t = &mut*(ptr as *mut T);
-                _ = std::mem::replace(t, data);
-                Ok(FSHandle{ ptr: ptr as *mut T })
+                let p = ptr.cast::<SessionData<T>>();
+                let r = &mut *p;
+                _ = std::mem::replace(r, SessionData(data));
+                Ok(FSHandle{ ptr: p})
             }
             else {
                 Err(SessionError::AllocationError)
@@ -130,9 +156,13 @@ impl<'a> Session<'a> {
         }
     }
 
-    pub fn get<T>(&self, k:FSHandle<T>) -> Option<FSObject<T>> {
+    pub fn get<T>(&self, k:&FSHandle<T>) -> Option<FSObject<T>> {
         // This should have same life time as &self right?
         Some(FSObject { ptr:k.ptr, lifetime:PhantomData{} })
+    }
+
+    pub fn get_mut<T>(&mut self, k:&FSHandle<T>) -> Option<FSObjectMut<T>> {
+        Some(FSObjectMut { ptr:k.ptr, lifetime:PhantomData{} })
     }
 
     pub fn add_media_bug<F>(&self, name:String, target:String, flags: switch_media_bug_flag_t, callback:F) 

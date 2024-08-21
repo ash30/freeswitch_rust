@@ -1,12 +1,8 @@
 use std::borrow::Cow;
-use std::rc::Rc;
 use clap::ArgAction;
 use clap::value_parser;
 use clap::{Command, Arg};
-use freeswitch_sys::switch_abc_type_t_SWITCH_ABC_TYPE_CLOSE;
-use freeswitch_sys::switch_abc_type_t_SWITCH_ABC_TYPE_INIT;
-use freeswitch_sys::switch_abc_type_t_SWITCH_ABC_TYPE_READ;
-use freeswitch_sys::switch_abc_type_t_SWITCH_ABC_TYPE_WRITE_REPLACE;
+use freeswitch_sys::switch_abc_type_t;
 use freeswitch_sys::Session;
 
 pub enum Error {
@@ -23,27 +19,39 @@ pub enum ModSubcommand {
     Stop { session: String },
 }
 
-fn fork() {
-}
-
 fn api_main(command:ModSubcommand) -> Result<(),Error>{
     match command {
         ModSubcommand::Start { session, url } => {
-            let s = Session::locate(session).ok_or(Error::InvalidArguments)?;
+            // We can locate session and have RAII guard unlock for us when scope finishes
+            let s = Session::locate(&session).ok_or(Error::InvalidArguments)?;
 
-            s.add_media_bug("".to_string(), "".to_string(), 0, |bug,abc_type| { 
-                let s = bug.get_session();
+            // We can allocate arbitrary mod data types to session memory pool
+            // we ensure safety by only allowing session objects to deref back the handle's ptr
+            let data = Private { foo : 1};
+            let handle = s.insert(data).map_err(|_|Error::InvalidArguments)?;
+
+            // Bug Callback will run on session thread, so any closure vars must be Send 
+            let bug = s.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| { 
+                let mut s = bug.get_session();
+
+                // Session data can only be retrieved from Sesssion Object which implies you have
+                // lock, hence access is naturally sync 
+                let mut d = s.get_mut(&handle).unwrap();
+                d.as_mut().foo = 2;
+
+                // TODO:Ideally would unite enum with flags?
                 match abc_type {
-                    switch_abc_type_t_SWITCH_ABC_TYPE_INIT => {},
-                    switch_abc_type_t_SWITCH_ABC_TYPE_CLOSE => {},
-                    switch_abc_type_t_SWITCH_ABC_TYPE_READ => {},
-                    switch_abc_type_t_SWITCH_ABC_TYPE_WRITE_REPLACE => {}
-                }
-                return true
+                    switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
+                    switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {}
+                    switch_abc_type_t::SWITCH_ABC_TYPE_READ => {}
+                    _ => {}
+                };
+                true
             });
-        }
+        },
+        ModSubcommand::Stop { session } => {},
         _ => {}
-    }
+    };
     Ok(())
 }
 
