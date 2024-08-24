@@ -1,0 +1,8 @@
+[package]
+name = "freeswitch_rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cc = { version = "1.0", features = ["parallel"] }
+freeswitch_sys = { path = "../freeswitch_sys" }

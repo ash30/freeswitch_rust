@@ -3,7 +3,7 @@ use clap::ArgAction;
 use clap::value_parser;
 use clap::{Command, Arg};
 use freeswitch_sys::switch_abc_type_t;
-use freeswitch_sys::Session;
+use freeswitch_rs::Session;
 use tokio::runtime::Runtime;
 use std::sync::OnceLock;
 

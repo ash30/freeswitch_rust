@@ -2,5 +2,6 @@
 
 members = [
     "freeswitch_sys",
-    "mod_audio_forkrs",
+    "freeswitch_rs",
+    "mods/mod_audio_forkrs",
 ]
