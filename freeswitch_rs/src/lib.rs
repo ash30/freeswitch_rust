@@ -1,8 +1,87 @@
 use std::ffi::c_void;
+use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::{ffi::CString, marker::PhantomData};
 use freeswitch_sys::*;
+use std::any::TypeId;
+
+pub use freeswitch_rs_macros::switch_module_define;
+pub use freeswitch_rs_macros::switch_api_define;
+
+pub enum Error {
+}
+
+// We will need a macro to transform trait into extern C functions ....
+// and call RUST function
+pub trait LoadableModule {
+    fn load(builder:ModuleBuilder) -> bool;
+    fn shutdown() -> bool { true }
+    fn runtime() -> bool { true }
+}
+
+pub type FSModuleInterface<'a> = FSObject<'a,*mut switch_loadable_module_interface>;
+pub type FSModulePool<'a> = FSObject<'a,switch_memory_pool_t>;
+
+pub struct ModuleBuilder<'a> {
+    m: FSModuleInterface<'a>,
+    p: FSModulePool<'a>,
+}
+
+impl<'a> ModuleBuilder<'a> {
+
+    // Internally FS locks so safe to use &self 
+    pub fn add<T:CustomInterface>(&self, interface:T) where T::FSInterface:'static {
+        let t = TypeId::of::<T::FSInterface>();
+
+        // TODO: Add all interfaces
+        let name = if t == TypeId::of::<switch_api_interface_t>() {
+            switch_module_interface_name_t::SWITCH_API_INTERFACE
+        } else if t == TypeId::of::<switch_chat_application_interface_t>() {
+            switch_module_interface_name_t::SWITCH_APPLICATION_INTERFACE
+        } else {
+            panic!("unsupported mod interface")
+        };
+
+        // SAFETY: We assume the module ptr given to us is valid 
+        // also we restrict access to the builder to ONLY the load function
+        unsafe {
+            let ptr = switch_loadable_module_create_interface(*(self.m.ptr), name) as *mut T::FSInterface;
+            interface.init_fs_interface(&mut *ptr);
+        }
+
+    }
+}
+
+// =====
+
+pub trait CustomInterface {
+    type FSInterface;
+    fn init_fs_interface(&self, i:&mut Self::FSInterface);
+}
+
+pub struct Stream {}
+
+pub trait ApiInterface {
+    const NAME:&'static str;
+    const DESC:&'static str;
+    fn api_fn(cmd:&str, session:Option<Session>, stream:Stream);
+    unsafe extern "C" fn api_fn_raw(
+        cmd: *const ::std::os::raw::c_char,
+        session: *mut freeswitch_sys::switch_core_session_t,
+        stream: *mut freeswitch_sys::switch_stream_handle_t,
+    ) -> freeswitch_sys::switch_status_t;
+}
+
+impl<T> CustomInterface for T where T:ApiInterface {
+    type FSInterface = switch_api_interface_t;
+    fn init_fs_interface(&self, i:&mut Self::FSInterface) {
+        // here we setup 
+    }
+}
+
+
+// ==============
 
 pub struct FSHandle<T>{ 
     ptr: *mut T,

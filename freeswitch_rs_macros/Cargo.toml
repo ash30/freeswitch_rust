@@ -1,0 +1,12 @@
+[package]
+name = "freeswitch_rs_macros"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = [ "extra-traits"] }
+quote = "1.0"
+freeswitch_sys =  { path = "../freeswitch_sys" }
