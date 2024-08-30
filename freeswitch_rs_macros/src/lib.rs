@@ -9,9 +9,50 @@ pub fn switch_module_define(attr: TokenStream, item: TokenStream) -> TokenStream
 }
 
 fn impl_switch_module_define(ast: &syn::ItemStruct) -> TokenStream {
+    let syn::ItemStruct {
+        ident,
+        ..
+	} = ast;
+
     let output = quote! {
         #ast
-        pub static mut name: freeswitch_sys::switch_loadable_module_function_table_t = freeswitch_sys::switch_loadable_module_function_table {};
+
+        struct __MOD__;
+        impl __MOD__ {
+            const fslog:freeswitch_rs::FSLogger = freeswitch_rs::FSLogger;
+
+            unsafe extern "C" fn mod_load_raw(
+                module_interface: *mut *mut freeswitch_sys::switch_loadable_module_interface_t,
+                pool: *mut freeswitch_sys::switch_memory_pool_t,
+            ) -> freeswitch_sys::switch_status_t {
+
+                // Setup logging for the rest of the user defined module functions
+                freeswitch_rs::log::set_logger(&__MOD__::fslog);
+
+                let m = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
+                let p = freeswitch_rs::FSModulePool::from_raw(pool);
+                #ident::load(m,p);
+                freeswitch_sys::switch_status_t_SWITCH_STATUS_SUCCESS
+            }
+
+            unsafe extern "C" fn mod_shutdown_raw() -> freeswitch_sys::switch_status_t {
+                freeswitch_sys::switch_status_t_SWITCH_STATUS_SUCCESS
+            }
+
+            unsafe extern "C" fn mod_runtime_raw() -> freeswitch_sys::switch_status_t {
+                freeswitch_sys::switch_status_t_SWITCH_STATUS_TERM
+            }
+        }
+
+        #[no_mangle]
+        #[allow(non_upper_case_globals)]
+        pub static mut mod_test: freeswitch_sys::switch_loadable_module_function_table= freeswitch_sys::switch_loadable_module_function_table{
+            switch_api_version: 5,
+            load: Some(__MOD__::mod_load_raw),
+            shutdown: Some(__MOD__::mod_shutdown_raw),
+            runtime: Some(__MOD__::mod_runtime_raw),
+            flags: 0,
+        };
     };
     TokenStream::from(output)
 }
@@ -33,6 +74,8 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
 
     let name = &sig.ident;
     let output = quote! {
+
+        #[allow(non_camel_case_types)]
         struct #name;
         impl #name {
             #ast

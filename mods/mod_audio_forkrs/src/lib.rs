@@ -1,7 +1,8 @@
-use std::borrow::Cow;
 use clap::ArgAction;
 use clap::value_parser;
 use clap::{Command, Arg};
+use freeswitch_rs::FSModuleInterface;
+use freeswitch_rs::FSModulePool;
 use freeswitch_rs::Stream;
 use freeswitch_sys::switch_abc_type_t;
 use freeswitch_rs::Session;
@@ -10,6 +11,10 @@ use std::sync::OnceLock;
 use freeswitch_rs::switch_module_define;
 use freeswitch_rs::switch_api_define;
 use freeswitch_rs::LoadableModule;
+
+use freeswitch_rs::log::{info, debug};
+use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
+use freeswitch_rs::SWITCH_CHANNEL_ID_SESSION;
 
 pub enum Error {
     InvalidArguments,
@@ -21,30 +26,27 @@ struct Private {
     foo: u8
 }
 
-pub enum ModSubcommand {
-    Start { session:String, url : String },
-    Stop { session: String },
-}
-
 static RT: OnceLock<Runtime> = OnceLock::new();
 
 #[switch_module_define]
 struct ModAudioFork;
 
 impl LoadableModule for ModAudioFork {
-    fn load(builder:freeswitch_rs::ModuleBuilder) -> bool {
+    fn load(module: FSModuleInterface, pool: FSModulePool) -> bool{
+        info!(channel = SWITCH_CHANNEL_ID_LOG; "mod audiofork loading");
         let _ = RT.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
                 .build()
                 .unwrap()
         });
-        builder.add(api_main);
+        module.add_api(api_main);
         return true
     }
 }
 
 #[switch_api_define("AudioFork")]
 fn api_main(cmd:&str, session:Option<Session>, stream:Stream) {
+    debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
     let res = match parse_args(cmd) {
         Err(e) => Ok(()),
         Ok(cmd) => {
@@ -57,6 +59,7 @@ fn api_main(cmd:&str, session:Option<Session>, stream:Stream) {
 }
 
 fn api_start(uuid:String, url:String) -> Result<(),Error> {
+    debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
     // We can locate session and have RAII guard unlock for us when scope finishes
     let s = Session::locate(&uuid).ok_or(Error::InvalidArguments)?;
 
@@ -98,6 +101,13 @@ fn api_start(uuid:String, url:String) -> Result<(),Error> {
         true
     });
     Ok(())
+}
+
+// ========
+
+pub enum ModSubcommand {
+    Start { session:String, url : String },
+    Stop { session: String },
 }
 
 fn parse_args(cmd_str:&str) -> Result<ModSubcommand,Error> {

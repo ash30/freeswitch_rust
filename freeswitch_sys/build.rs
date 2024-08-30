@@ -30,6 +30,11 @@ fn main() {
         .newtype_enum("switch_abc_type_t")
         .allowlist_item("switch_module_interface_name_t")
         .newtype_enum("switch_module_interface_name_t")
+        .allowlist_item("switch_log_printf")
+        .allowlist_item("switch_log_level_t")
+        .newtype_enum("switch_log_level_t")
+        .allowlist_item("switch_text_channel_t")
+        .newtype_enum("switch_text_channel_t")
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.
