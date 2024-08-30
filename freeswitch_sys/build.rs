@@ -21,7 +21,15 @@ fn main() {
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
 	    .allowlist_item("^switch_core_session.*")
+	    .allowlist_item("^switch_core_perform_session.*")
 	    .allowlist_item("^switch_log.*")
+        .allowlist_item("^switch_core_media_bug.*")
+        .allowlist_item("switch_loadable_module_function_table_t")
+        .allowlist_item("switch_loadable_module_create_interface")
+        .allowlist_item("switch_.*?_interface_t")
+        .newtype_enum("switch_abc_type_t")
+        .allowlist_item("switch_module_interface_name_t")
+        .newtype_enum("switch_module_interface_name_t")
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.

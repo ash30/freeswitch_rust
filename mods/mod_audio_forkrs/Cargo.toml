@@ -1,0 +1,10 @@
+[package]
+name = "mod_audiofolk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.9", features = []} 
+tokio = { version = "1", features = ["full"] }
+freeswitch_sys = { path = "../../freeswitch_sys" }
+freeswitch_rs = { path = "../../freeswitch_rs" }
