@@ -6,6 +6,7 @@ pub use fslog::SWITCH_CHANNEL_ID_LOG;
 pub use fslog::SWITCH_CHANNEL_ID_EVENT;
 pub use fslog::SWITCH_CHANNEL_ID_SESSION;
 
+use std::arch::aarch64::int64x1_t;
 use std::ffi::c_void;
 use std::ops::Deref;
 use std::ptr;
@@ -18,7 +19,7 @@ pub use freeswitch_rs_macros::switch_api_define;
 // We will need a macro to transform trait into extern C functions ....
 // and call RUST function
 pub trait LoadableModule {
-    fn load(module: FSModuleInterface, pool: FSModulePool) -> bool;
+    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t ;
     //fn shutdown() -> bool { true }
     //fn runtime() -> bool { true }
 }
@@ -43,12 +44,25 @@ impl<'a> FSModuleInterface<'a> {
 }
 
 // =====
-pub struct Stream {}
+//pub struct StreamHandle {}
+pub type StreamHandle<'a> = FSObject<'a,switch_stream_handle_t>;
+
+impl<'a> std::io::Write for StreamHandle<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = 0x1Ausize;
+        Ok(n)
+        
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+       Ok(())
+    }
+}
+
 
 pub trait ApiInterface {
     const NAME:&'static str;
     const DESC:&'static str;
-    fn api_fn(cmd:&str, session:Option<Session>, stream:Stream);
+    fn api_fn(cmd:&str, session:Option<Session>, stream:StreamHandle) -> freeswitch_sys::switch_status_t;
     unsafe extern "C" fn api_fn_raw(
         cmd: *const ::std::os::raw::c_char,
         session: *mut freeswitch_sys::switch_core_session_t,
@@ -245,8 +259,7 @@ impl<'a> Session<'a> {
                 flags, 
                 &mut bug as *mut *mut switch_media_bug_t
             );
-
-            if res == switch_status_t_SWITCH_STATUS_SUCCESS && !bug.is_null() {
+            if res == switch_status_t::SWITCH_STATUS_SUCCESS && !bug.is_null() {
                 let h = MediaBugHandle { ptr: bug };
                 Ok(h)
             }
