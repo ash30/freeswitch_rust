@@ -31,16 +31,15 @@ fn impl_switch_module_define(ast: &syn::ItemStruct) -> TokenStream {
 
                 let m = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
                 let p = freeswitch_rs::FSModulePool::from_raw(pool);
-                #ident::load(m,p);
-                freeswitch_sys::switch_status_t_SWITCH_STATUS_SUCCESS
+                #ident::load(m,p)
             }
 
             unsafe extern "C" fn mod_shutdown_raw() -> freeswitch_sys::switch_status_t {
-                freeswitch_sys::switch_status_t_SWITCH_STATUS_SUCCESS
+                freeswitch_sys::switch_status_t::SWITCH_STATUS_SUCCESS
             }
 
             unsafe extern "C" fn mod_runtime_raw() -> freeswitch_sys::switch_status_t {
-                freeswitch_sys::switch_status_t_SWITCH_STATUS_TERM
+                freeswitch_sys::switch_status_t::SWITCH_STATUS_TERM
             }
         }
 
@@ -84,7 +83,7 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
         impl freeswitch_rs::ApiInterface for #name {
             const NAME:&'static str = "test";
             const DESC:&'static str = "test";
-            fn api_fn(cmd:&str, session:Option<Session>, stream:Stream) {
+            fn api_fn(cmd:&str, session:Option<freeswitch_rs::Session>, stream:freeswitch_rs::StreamHandle) -> freeswitch_sys::switch_status_t {
                 #name::#name(cmd,session,stream)                
             }
             unsafe extern "C" fn api_fn_raw(
@@ -92,15 +91,10 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
                 session: *mut freeswitch_sys::switch_core_session_t,
                 stream: *mut freeswitch_sys::switch_stream_handle_t,
             ) -> freeswitch_sys::switch_status_t {
-
                 let c = std::ffi::CStr::from_ptr(cmd);
                 let session = None;
-                let stream = freeswitch_rs::Stream {};
-
-                #name::api_fn(c.to_str().unwrap(),session,stream);
-                freeswitch_sys::switch_status_t_SWITCH_STATUS_SUCCESS
-                
-                // call original function please
+                let stream = freeswitch_rs::StreamHandle::from_raw(stream);
+                #name::api_fn(c.to_str().unwrap(),session,stream)
             }
         }
     };

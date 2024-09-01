@@ -3,10 +3,12 @@ use clap::value_parser;
 use clap::{Command, Arg};
 use freeswitch_rs::FSModuleInterface;
 use freeswitch_rs::FSModulePool;
-use freeswitch_rs::Stream;
+use freeswitch_rs::StreamHandle;
 use freeswitch_sys::switch_abc_type_t;
 use freeswitch_rs::Session;
+use freeswitch_sys::switch_status_t;
 use tokio::runtime::Runtime;
+use std::io::Write;
 use std::sync::OnceLock;
 use freeswitch_rs::switch_module_define;
 use freeswitch_rs::switch_api_define;
@@ -32,7 +34,7 @@ static RT: OnceLock<Runtime> = OnceLock::new();
 struct ModAudioFork;
 
 impl LoadableModule for ModAudioFork {
-    fn load(module: FSModuleInterface, pool: FSModulePool) -> bool{
+    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
         info!(channel = SWITCH_CHANNEL_ID_LOG; "mod audiofork loading");
         let _ = RT.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
@@ -40,22 +42,27 @@ impl LoadableModule for ModAudioFork {
                 .unwrap()
         });
         module.add_api(api_main);
-        return true
+        return switch_status_t::SWITCH_STATUS_SUCCESS
     }
 }
 
 #[switch_api_define("AudioFork")]
-fn api_main(cmd:&str, session:Option<Session>, stream:Stream) {
+fn api_main(cmd:&str, session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
     debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
-    let res = match parse_args(cmd) {
-        Err(e) => Ok(()),
+    match parse_args(cmd) {
+        Err(e) => {
+            write!(stream, "ERR: mod audiofork invalid usage");
+            switch_status_t::SWITCH_STATUS_FALSE
+        },
         Ok(cmd) => {
-            match cmd {
+            if match cmd {
                 ModSubcommand::Start { session, url } => api_start(session, url),
                 ModSubcommand::Stop { session } => Ok(())
             }
+            .is_ok() { switch_status_t::SWITCH_STATUS_SUCCESS } 
+            else { switch_status_t::SWITCH_STATUS_FALSE }
         }
-    };
+    }
 }
 
 fn api_start(uuid:String, url:String) -> Result<(),Error> {

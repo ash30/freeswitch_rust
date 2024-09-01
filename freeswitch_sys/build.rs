@@ -35,6 +35,8 @@ fn main() {
         .newtype_enum("switch_log_level_t")
         .allowlist_item("switch_text_channel_t")
         .newtype_enum("switch_text_channel_t")
+        .allowlist_item("switch_status_t")
+        .newtype_enum("switch_status_t")
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.
