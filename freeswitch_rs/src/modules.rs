@@ -1,4 +1,5 @@
 use crate::utils::FSObject;
+use crate::session::Session;
 use std::ffi::CString;
 use freeswitch_sys::switch_api_interface_t;
 use freeswitch_sys::switch_loadable_module_create_interface;
@@ -80,4 +81,3 @@ pub trait ApiInterface {
     ) -> freeswitch_sys::switch_status_t;
 }
 
-// ==============

@@ -1,8 +1,17 @@
 // mods
-pub mod fslog;
-pub mod modules;
-pub mod utils;
-pub mod session;
+mod fslog;
+mod modules;
+mod utils;
+mod session;
+
+// rexports 
+pub use modules::*;
+pub use utils::*;
+pub use session::*;
+
+// sys rexports
+pub use freeswitch_sys::switch_status_t;
+pub use freeswitch_sys::switch_abc_type_t;
 
 // logging
 pub use fslog::FSLogger;
@@ -15,4 +24,5 @@ pub use fslog::SWITCH_CHANNEL_ID_SESSION;
 // macros
 pub use freeswitch_rs_macros::switch_module_define;
 pub use freeswitch_rs_macros::switch_api_define;
+pub use freeswitch_rs_macros::switch_module_load_function;
 

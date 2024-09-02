@@ -1,22 +1,14 @@
 use clap::ArgAction;
 use clap::value_parser;
 use clap::{Command, Arg};
-use freeswitch_rs::FSModuleInterface;
-use freeswitch_rs::FSModulePool;
-use freeswitch_rs::StreamHandle;
-use freeswitch_sys::switch_abc_type_t;
-use freeswitch_rs::Session;
-use freeswitch_sys::switch_status_t;
 use tokio::runtime::Runtime;
 use std::io::Write;
 use std::sync::OnceLock;
-use freeswitch_rs::switch_module_define;
-use freeswitch_rs::switch_api_define;
-use freeswitch_rs::LoadableModule;
 
 use freeswitch_rs::log::{info, debug};
 use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
 use freeswitch_rs::SWITCH_CHANNEL_ID_SESSION;
+use freeswitch_rs::*;
 
 pub enum Error {
     InvalidArguments,
@@ -30,34 +22,34 @@ struct Private {
 
 static RT: OnceLock<Runtime> = OnceLock::new();
 
-#[switch_module_define]
-struct ModAudioFork;
+switch_module_define!(mod_audiofork, load);
 
-impl LoadableModule for ModAudioFork {
-    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
-        info!(channel = SWITCH_CHANNEL_ID_LOG; "mod audiofork loading");
-        let _ = RT.get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .build()
-                .unwrap()
-        });
-        module.add_api(api_main);
-        return switch_status_t::SWITCH_STATUS_SUCCESS
-    }
+#[switch_module_load_function]
+fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
+    info!(channel = SWITCH_CHANNEL_ID_LOG; "mod audiofork loading");
+    let _ = RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .build()
+            .unwrap()
+    });
+    module.add_api(api_main);
+    return switch_status_t::SWITCH_STATUS_SUCCESS
 }
 
+// =============
+
 #[switch_api_define("AudioFork")]
-fn api_main(cmd:&str, session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
+fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
     debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
     match parse_args(cmd) {
-        Err(e) => {
+        Err(_) => {
             write!(stream, "ERR: mod audiofork invalid usage");
             switch_status_t::SWITCH_STATUS_FALSE
         },
         Ok(cmd) => {
             if match cmd {
                 ModSubcommand::Start { session, url } => api_start(session, url),
-                ModSubcommand::Stop { session } => Ok(())
+                ModSubcommand::Stop { .. } => Ok(())
             }
             .is_ok() { switch_status_t::SWITCH_STATUS_SUCCESS } 
             else { switch_status_t::SWITCH_STATUS_FALSE }
