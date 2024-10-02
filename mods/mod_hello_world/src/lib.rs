@@ -2,7 +2,7 @@ use freeswitch_rs::log::{info, debug};
 use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
 use freeswitch_rs::*;
 
-switch_module_define!(mod_audiofork, load);
+switch_module_define!(mod_hello_world, load);
 
 #[switch_module_load_function]
 fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {

@@ -1,22 +1,23 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::parse::Parser;
+use quote::{format_ident, quote};
+use syn::{parse::Parser, parse_macro_input};
 
 #[proc_macro]
 pub fn switch_module_define(_item: TokenStream) -> TokenStream {
-    let data = syn::punctuated::Punctuated::<syn::Type, syn::Token![,]>::parse_terminated
+    let data = syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated
     .parse2(_item.into())
     .unwrap();
     impl_switch_module_define(data)
 }
 
-fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::token::Comma>) -> TokenStream {
-    let name = args.get(0);
+fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Path,syn::token::Comma>) -> TokenStream {
+    let name = args.get(0).unwrap().get_ident().unwrap();
+    let fn_name = format_ident!("{}_module_interface", name);
     let load_fn = args.get(1);
     let output = quote! {
         #[no_mangle]
         #[allow(non_upper_case_globals)]
-        pub static mut #name: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
+        pub static mut #fn_name: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
             switch_api_version: 5,
             load: Some(#load_fn),
             shutdown: None,
