@@ -2,30 +2,56 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse::Parser, parse_macro_input};
 
+
+// switch_module_define(mod_name, load)
 #[proc_macro]
 pub fn switch_module_define(_item: TokenStream) -> TokenStream {
-    let data = syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated
+    let data = syn::punctuated::Punctuated::<syn::Type, syn::Token![,]>::parse_terminated
     .parse2(_item.into())
     .unwrap();
     impl_switch_module_define(data)
 }
 
-fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Path,syn::token::Comma>) -> TokenStream {
-    let name = args.get(0).unwrap().get_ident().unwrap();
-    let fn_name = format_ident!("{}_module_interface", name);
+fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::token::Comma>) -> TokenStream {
+    let mod_name:&syn::Ident = args.get(0)
+        .and_then(|t| if let syn::Type::Path(p) = t {Some(p)} else {None} )
+        .and_then(|p| p.path.get_ident())
+        .expect("mod name should be valid");
+    let mod_name_string = mod_name.to_string().to_owned();
+    
     let load_fn = args.get(1);
+    let mod_load_ident = format_ident!("{}_load", mod_name);
     let output = quote! {
+        
+        // Wrap Load function 
+        use std::io::Write;
+
+        unsafe extern "C" fn #mod_load_ident (
+            module_interface: *mut *mut freeswitch_rs::switch_loadable_module_interface_t,
+            pool: *mut freeswitch_rs::switch_memory_pool_t,
+        ) -> freeswitch_rs::switch_status_t {
+
+            let ptr = freeswitch_rs::FSModuleInterface::create(#mod_name_string, pool);
+            if ptr.is_null() { panic!("Module Creation Failed") }
+            *module_interface = *(&ptr);
+
+            let module = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
+            let pool = freeswitch_rs::FSModulePool::from_raw(pool);
+            #load_fn(module,pool)
+        }
+
+        // Module Table
         #[no_mangle]
         #[allow(non_upper_case_globals)]
-        pub static mut #fn_name: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
+        pub static mut #mod_name: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
             switch_api_version: 5,
-            load: Some(#load_fn),
+            load: Some(#mod_load_ident),
             shutdown: None,
             runtime: None,
             flags: 0,
         };
     };
-    //eprintln!("TOKENS: {}", output);
+    eprintln!("TOKENS: {}", output);
     TokenStream::from(output)
 }
 
@@ -51,6 +77,9 @@ fn impl_switch_module_load_function(ast: &syn::ItemFn) -> TokenStream {
             module_interface: *mut *mut freeswitch_rs::switch_loadable_module_interface_t,
             pool: *mut freeswitch_rs::switch_memory_pool_t,
         ) -> freeswitch_rs::switch_status_t {
+
+            // NEED module name ...
+            *module_interface = switch_loadable_module_create_module_interface(pool, "");
             let module = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
             let pool = freeswitch_rs::FSModulePool::from_raw(pool);
             #block

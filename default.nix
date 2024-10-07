@@ -17,11 +17,11 @@ rustPlatform.buildRustPackage rec {
   pname = "freeswitch_rs";
   version = "0.1";
   nativeBuildInputs = with pkgs; [ 
-    fs
     rustPlatform.bindgenHook
+    fs
   ] ++ lib.optionals stdenv.isDarwin [
   ];
-  NIX_CFLAGS_COMPILE="-isystem ${fs.out}/include/freeswitch";
+  NIX_CFLAGS_COMPILE="-isystem ${fs.out}/include/freeswitch -I${fs.out}/include/freeswitch";
 
   cargoLock.lockFile = ./Cargo.lock;
 
