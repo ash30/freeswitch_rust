@@ -55,6 +55,12 @@ pub type FSModuleInterface<'a> = FSObject<'a,*mut switch_loadable_module_interfa
 pub type FSModulePool<'a> = FSObject<'a,switch_memory_pool_t>;
 
 impl<'a> FSModuleInterface<'a> {
+    // SAFETY: DONT CALL 
+    pub unsafe fn create(name:&str, pool:*mut switch_memory_pool_t,) -> *mut switch_loadable_module_interface {
+        let mod_name =  CString::new(name.to_owned()).unwrap().into_raw();
+        freeswitch_sys::switch_loadable_module_create_module_interface(pool, mod_name)
+    }
+
     // Internally FS locks so safe to use &self 
     pub fn add_api<T:ApiInterface>(&self, _i:T) {
        let t = switch_module_interface_name_t::SWITCH_API_INTERFACE;

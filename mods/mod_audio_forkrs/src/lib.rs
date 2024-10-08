@@ -2,7 +2,6 @@ use clap::ArgAction;
 use clap::value_parser;
 use clap::{Command, Arg};
 use tokio::runtime::Runtime;
-use std::io::Write;
 use std::sync::OnceLock;
 
 use freeswitch_rs::log::{info, debug};
@@ -67,12 +66,12 @@ fn api_start(uuid:String, url:String) -> Result<(),Error> {
     let data = Private { foo : 1};
     let handle = s.insert(data).map_err(|_|Error::InvalidArguments)?;
 
-    let (tx,rx) = tokio::sync::mpsc::unbounded_channel();
+    //let (tx,rx) = tokio::sync::mpsc::unbounded_channel();
     let rt = RT.get().ok_or(Error::RuntimeInit)?;
     rt.spawn(async move {
         // Setup WS 
         loop {
-            let Some(frame) = rx.recv().await else { break };
+            //let Some(frame) = rx.recv().await else { break };
             // send to ws 
         }
     });

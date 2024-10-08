@@ -14,14 +14,14 @@ let
   fs =  (pkgs.buildPackages.callPackage ./freeswitch { });
 in
 rustPlatform.buildRustPackage rec {  
-  pname = "freeswitch_local";
+  pname = "freeswitch_rs";
   version = "0.1";
   nativeBuildInputs = with pkgs; [ 
+    rustPlatform.bindgenHook
     fs
-    libclang
   ] ++ lib.optionals stdenv.isDarwin [
   ];
-  NIX_CFLAGS_COMPILE="-I${fs.out}/include/freeswitch";
+  NIX_CFLAGS_COMPILE="-isystem ${fs.out}/include/freeswitch -I${fs.out}/include/freeswitch";
 
   cargoLock.lockFile = ./Cargo.lock;
 
