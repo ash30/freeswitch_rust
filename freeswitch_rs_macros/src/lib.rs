@@ -21,6 +21,7 @@ fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::to
     
     let load_fn = args.get(1);
     let mod_load_ident = format_ident!("{}_load", mod_name);
+    let mod_interface_ident = format_ident!("{}_module_interface", mod_name);
     let output = quote! {
         
         // Wrap Load function 
@@ -43,7 +44,7 @@ fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::to
         // Module Table
         #[no_mangle]
         #[allow(non_upper_case_globals)]
-        pub static mut #mod_name: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
+        pub static mut #mod_interface_ident: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
             switch_api_version: 5,
             load: Some(#mod_load_ident),
             shutdown: None,
