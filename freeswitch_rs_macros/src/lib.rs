@@ -34,6 +34,7 @@ fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::to
 
             // init rust logger 
             freeswitch_rs::log::set_logger(&freeswitch_rs::FS_LOG).expect("successful rust logger init");
+            freeswitch_rs::log::set_max_level(freeswitch_rs::log::LevelFilter::Debug);
 
             let ptr = freeswitch_rs::FSModuleInterface::create(#mod_name_string, pool);
             if ptr.is_null() { panic!("Module Creation Failed") }
