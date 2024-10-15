@@ -20,6 +20,8 @@ pub const SWITCH_CHANNEL_ID_SESSION: FSTextChannel = FSTextChannel(switch_text_c
 // log crate facarde. Still working out how to pass user data back ....
 pub struct FSLogger;
 
+pub static FS_LOG:FSLogger = FSLogger {};
+
 impl Log for FSLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         true   

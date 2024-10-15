@@ -7,9 +7,7 @@
   }
 }:
 pkgs.mkShell {
-  # Get dependencies from the main package
   inputsFrom = [ (pkgs.callPackage ./default.nix { }) ];
-  # Additional tooling
   buildInputs = with pkgs; [
     rust-bin.stable.latest.rust-analyzer # LSP Server
     rust-bin.stable.latest.rustfmt       # Formatter

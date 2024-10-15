@@ -21,9 +21,14 @@ rustPlatform.buildRustPackage rec {
     fs
   ] ++ lib.optionals stdenv.isDarwin [
   ];
-  NIX_CFLAGS_COMPILE="-isystem ${fs.out}/include/freeswitch -I${fs.out}/include/freeswitch";
+  CFLAGS_COMPILE = "-I${fs.out}/include/freeswitch";
+  NIX_CFLAGS_COMPILE="-I${fs.out}/include/freeswitch";
 
   cargoLock.lockFile = ./Cargo.lock;
 
   src = pkgs.lib.cleanSource ./.;
+  shellHook = ''
+    export NIX_CFLAGS_COMPILE=$NIX_CFLAGS_COMPILE:${fs.out}/include/freeswitch
+    
+  '';
 }
