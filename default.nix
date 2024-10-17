@@ -16,19 +16,20 @@ in
 rustPlatform.buildRustPackage rec {  
   pname = "freeswitch_rs";
   version = "0.1";
+  CFLAGS_COMPILE = "-I${fs.out}/include/freeswitch";
+  NIX_CFLAGS_COMPILE="-I${fs.out}/include/freeswitch";
+
   nativeBuildInputs = with pkgs; [ 
     rustPlatform.bindgenHook
     fs
+    pkg-config
   ] ++ lib.optionals stdenv.isDarwin [
   ];
-  CFLAGS_COMPILE = "-I${fs.out}/include/freeswitch";
-  NIX_CFLAGS_COMPILE="-I${fs.out}/include/freeswitch";
 
   cargoLock.lockFile = ./Cargo.lock;
 
   src = pkgs.lib.cleanSource ./.;
   shellHook = ''
-    export NIX_CFLAGS_COMPILE=$NIX_CFLAGS_COMPILE:${fs.out}/include/freeswitch
-    
+    export BINDGEN_EXTRA_CLANG_ARGS="$BINDGEN_EXTRA_CLANG_ARGS $(pkg-config --cflags freeswitch)"
   '';
 }
