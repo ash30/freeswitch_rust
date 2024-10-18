@@ -28,7 +28,9 @@ impl Log for FSLogger {
     }
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            let file = CString::new(record.file().unwrap_or("unknown")).unwrap();
+            // lets prefix the file name so we can find things in fs_cli
+            let prefixed_file_name = format!("{}:{}", env!("CARGO_PKG_NAME") , record.file().unwrap_or("unknown")); 
+            let file = CString::new(prefixed_file_name).unwrap();
             let line = record.line().unwrap_or(0);
             let func = CString::new("").unwrap();
             let level = match record.metadata().level() {
