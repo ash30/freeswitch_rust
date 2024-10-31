@@ -4,13 +4,10 @@
        # Why does this break?
       (import (fetchTarball "https://github.com/oxalica/rust-overlay/archive/2e7ccf572ce0f0547d4cf4426de4482936882d0e.tar.gz"))
     ];
-  } 
+  },
+  rustPlatform ? pkgs.rustPlatform 
 }:
 let
-  rustPlatform = pkgs.makeRustPlatform {
-    rustc = pkgs.rust-bin.stable.latest.default;
-    cargo = pkgs.rust-bin.stable.latest.default;
-  };
   fs =  (pkgs.buildPackages.callPackage ./freeswitch { });
 in
 rustPlatform.buildRustPackage rec {  

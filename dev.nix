@@ -6,11 +6,20 @@
     ];
   }
 }:
+let
+  rust = pkgs.rust-bin.stable.latest.default.override { extensions = ["rust-src"]; };
+  rustPlatform = pkgs.makeRustPlatform {
+    rustc = rust;
+    cargo = pkgs.rust-bin.stable.latest.default;
+  };
+in
 pkgs.mkShell {
   inputsFrom = [ (pkgs.callPackage ./default.nix { }) ];
   buildInputs = with pkgs; [
+    rust
     rust-bin.stable.latest.rust-analyzer # LSP Server
     rust-bin.stable.latest.rustfmt       # Formatter
     rust-bin.stable.latest.clippy        # Linter
   ];
+  RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library/";
 }
