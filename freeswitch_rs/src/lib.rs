@@ -19,7 +19,7 @@ pub use freeswitch_sys::switch_core_session_t;
 pub use freeswitch_sys::switch_stream_handle_t;
 
 // logging
-pub use fslog::FSLogger;
+pub use fslog::FS_LOG;
 pub use log;
 pub use fslog::SWITCH_CHANNEL_ID_LOG_CLEAN;
 pub use fslog::SWITCH_CHANNEL_ID_LOG;
