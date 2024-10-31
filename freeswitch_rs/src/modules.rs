@@ -46,9 +46,9 @@ impl<'a> std::io::Write for StreamHandle<'a> {
 // We will need a macro to transform trait into extern C functions ....
 // and call RUST function
 pub trait LoadableModule {
-    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t ;
-    //fn shutdown() -> bool { true }
-    //fn runtime() -> bool { true }
+    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t;
+    fn shutdown() -> switch_status_t { switch_status_t::SWITCH_STATUS_SUCCESS }
+    fn runtime() -> switch_status_t { switch_status_t::SWITCH_STATUS_TERM }
 }
 
 pub type FSModuleInterface<'a> = FSObject<'a,*mut switch_loadable_module_interface>;

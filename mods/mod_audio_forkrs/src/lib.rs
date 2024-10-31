@@ -21,21 +21,21 @@ struct Private {
 
 static RT: OnceLock<Runtime> = OnceLock::new();
 
-switch_module_define!(mod_audiofork, load);
+#[switch_module_define(mod_audiofork)]
+struct FSMod;
 
-#[switch_module_load_function]
-fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
-    info!(channel = SWITCH_CHANNEL_ID_LOG; "mod audiofork loading");
-    let _ = RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .build()
-            .unwrap()
-    });
-    module.add_api(api_main);
-    return switch_status_t::SWITCH_STATUS_SUCCESS
+impl LoadableModule for FSMod {
+    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
+        info!(channel = SWITCH_CHANNEL_ID_LOG; "mod audiofork loading");
+        let _ = RT.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .build()
+                .unwrap()
+        });
+        module.add_api(api_main);
+        switch_status_t::SWITCH_STATUS_SUCCESS
+    }
 }
-
-// =============
 
 #[switch_api_define("AudioFork")]
 fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
