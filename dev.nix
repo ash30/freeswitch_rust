@@ -16,7 +16,6 @@ in
 pkgs.mkShell {
   inputsFrom = [ (pkgs.callPackage ./default.nix { }) ];
   buildInputs = with pkgs; [
-    rust
     rust-bin.stable.latest.rust-analyzer # LSP Server
     rust-bin.stable.latest.rustfmt       # Formatter
     rust-bin.stable.latest.clippy        # Linter
