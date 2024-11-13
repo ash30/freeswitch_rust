@@ -1,6 +1,13 @@
 use freeswitch_sys::*;
+use std::borrow::Borrow;
+use std::borrow::BorrowMut;
+use std::borrow::Cow;
 use std::ffi::c_void;
+use std::fmt::Pointer;
+use std::marker::PhantomData;
+use std::mem;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::ptr;
 use std::ffi::CString;
 
@@ -179,6 +186,62 @@ impl <'a> MediaBug<'a> {
             Session::from_raw(ptr)
         }
     }
+
+    pub fn remove(mut self) {
+        let s = self.get_session();
+        unsafe {
+            switch_core_media_bug_remove(s.ptr, &mut self.ptr);
+        }
+    }
+
+    // The FS api doesn't offer much inspection of the error when calling
+    // switch_core_media_bug_read - so how to understand IF its error or just not ready to read? 
+    // seems like a generic error value based on switch_status_t is the best we can do ?
+    pub fn read_frame(&mut self, buf:&mut[u8])  -> Result<usize,()> {
+       let mut f = unsafe { mem::MaybeUninit::<switch_frame_t>::zeroed().assume_init() };
+       f.data = buf.as_mut_ptr() as *mut c_void;
+       f.buflen = buf.len().try_into().unwrap();
+       let res = unsafe { switch_core_media_bug_read(self.ptr, &mut f, 1) };
+       if res != switch_status_t::SWITCH_STATUS_SUCCESS {
+            Err(())
+       }
+       else {
+            Ok(f.datalen.try_into().unwrap())
+       }
+    }
 }
 
+impl From<switch_status_t> for Result<(),switch_status_t> {
+    fn from(value: switch_status_t) -> Self {
+       if value == switch_status_t::SWITCH_STATUS_SUCCESS  {
+            Ok(())
+       }
+       else {
+            Err(value)
+       }
+    }
+}
+
+// ====
+// TODO: import properly 
+pub const SWITCH_RECOMMENDED_BUFFER_SIZE:usize = 8192;
+pub struct FrameBuffer([u8;SWITCH_RECOMMENDED_BUFFER_SIZE]);
+
+impl Default for FrameBuffer {
+    fn default() -> Self {
+       Self([0;SWITCH_RECOMMENDED_BUFFER_SIZE])
+     } 
+}
+
+impl Borrow<[u8]> for FrameBuffer {
+    fn borrow(&self) -> &[u8] {
+       &self.0 
+    }
+}
+
+impl BorrowMut<[u8]> for FrameBuffer {
+    fn borrow_mut(&mut self) -> &mut [u8] {
+       &mut self.0 
+    }
+}
 
