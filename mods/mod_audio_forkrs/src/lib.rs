@@ -1,6 +1,3 @@
-use anyhow::Ok;
-use clap::ArgAction;
-use clap::value_parser;
 use clap::{Command, Arg};
 use std::borrow::Borrow;
 use std::borrow::BorrowMut;
@@ -9,18 +6,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tungstenite::accept;
 use anyhow::Result;
 use anyhow::anyhow;
-use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
-
-mod ws;
+use clap::{FromArgMatches as _, Parser, Subcommand as _};
 
 use freeswitch_rs::log::{info, debug};
-use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
 use freeswitch_rs::SWITCH_CHANNEL_ID_SESSION;
 use freeswitch_rs::*;
-
-pub enum Error {
-    InvalidArguments,
-}
 
 #[derive(Parser, Debug)]
 enum Subcommands {
@@ -41,11 +31,11 @@ enum Subcommands {
 }
 
 fn parse_args(cmd_str:&str) -> Result<Subcommands> {
-    let mut cmd = Command::new("argparse");
+    let mut cmd = Command::new("argparse").disable_version_flag(true).disable_help_flag(true);
     cmd = Subcommands::augment_subcommands(cmd);
-    
     let matches = cmd.get_matches_from(cmd_str.split(' '));
-    Subcommands::from_arg_matches(&matches).map_err(|_| Error::InvalidArguments)
+    let s = Subcommands::from_arg_matches(&matches)?;
+    Ok(s)
 }
 
 #[repr(C)]
@@ -57,8 +47,8 @@ struct Private {
 struct FSMod;
 
 impl LoadableModule for FSMod {
-    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
-        info!(channel = SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
+    fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
+        info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
         module.add_api(api_main);
         switch_status_t::SWITCH_STATUS_SUCCESS
     }
@@ -66,16 +56,16 @@ impl LoadableModule for FSMod {
 
 #[switch_api_define("ws_fork")]
 fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
-    debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
+    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
     match parse_args(cmd) {
         Err(_) => {
-            write!(stream, "ERR: mod audiofork invalid usage");
+            let _ = write!(stream, "ERR: mod audiofork invalid usage");
         },
         Ok(cmd) => {
-            match cmd {
+            let _ = match cmd {
                 Subcommands::Start { session, ip, port} => api_start(session, ip, port),
                 Subcommands::Stop { session } => api_stop(session)
-            }
+            };
         }
     }
     switch_status_t::SWITCH_STATUS_SUCCESS
@@ -83,19 +73,17 @@ fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> swit
 
 fn api_stop(uuid:String) -> Result<()>{
     let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
-
     Ok(())
 }
 
 fn api_start(uuid:String, ip:String, port:u16) -> Result<()> {
-    debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
+    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
 
     // We can locate session and have RAII guard unlock for us when scope finishes
     let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
     let mut buf = LocalRb::new(SWITCH_RECOMMENDED_BUFFER_SIZE);
 
-    // TODO: get address from args / channel 
-    let ip_addr = IpAddr::V4(ip.parse());
+    let ip_addr = IpAddr::V4(ip.parse()?);
     let addr = SocketAddr::new(ip_addr, port);
     let stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1))?;
     let mut ws = accept(stream).unwrap();
@@ -106,7 +94,7 @@ fn api_start(uuid:String, ip:String, port:u16) -> Result<()> {
         match abc_type {
             switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
             switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
-                ws.close(None)
+                let _ = ws.close(None);
             }
             switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
                 let mut b = FrameBuffer::default();
@@ -121,20 +109,20 @@ fn api_start(uuid:String, ip:String, port:u16) -> Result<()> {
                     // TODO: REALLY! want to remove this allocation ...
                     let v:Vec<u8> = buf.pop_iter().collect();
                     match ws.send(tungstenite::Message::binary(v)) {
-                        Err(e @ tungstenite::Error::ConnectionClosed) => {
-                            info!(channel == SWITCH_CHANNEL_ID_SESSION; "ws connection closing for session fork: {}", uuid);
+                        Err(tungstenite::Error::ConnectionClosed) => {
+                            info!(channel=SWITCH_CHANNEL_ID_SESSION; "ws connection closing for session fork: {}", uuid);
                             // TODO Send event
                             return false 
+                        },
+                        Err(tungstenite::Error::Io(e)) => if let std::io::ErrorKind::WouldBlock = e.kind() { 
+                            // Shouldn't get here...
+                        }
+                        Err(tungstenite::Error::WriteBufferFull(_)) => {
+                            // drop packets...
                         },
                         Err(e) => {
                             // All other errors are considered fatal
                             return false 
-                        },
-                        Err( err @ std::io::Error) => if let std::io::ErrorKind::WouldBlock = err.kind() { 
-                            // Shouldn't get here...
-                        }
-                        Err(tungstenite::Error::WriteBufferFull(m)) => {
-                            // drop packets...
                         },
                         Ok(_) => {
                             // continue 
@@ -144,13 +132,11 @@ fn api_start(uuid:String, ip:String, port:u16) -> Result<()> {
             }
             _ => {}
         };
-        return true
+        true
     });
     Ok(())
 }
 
-
-// ========
 
 
 

@@ -211,16 +211,6 @@ impl <'a> MediaBug<'a> {
     }
 }
 
-impl From<switch_status_t> for Result<(),switch_status_t> {
-    fn from(value: switch_status_t) -> Self {
-       if value == switch_status_t::SWITCH_STATUS_SUCCESS  {
-            Ok(())
-       }
-       else {
-            Err(value)
-       }
-    }
-}
 
 // ====
 // TODO: import properly 
