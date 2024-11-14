@@ -1,12 +1,12 @@
-use clap::{Command, Arg};
+use clap::Command;
 use std::borrow::Borrow;
 use std::borrow::BorrowMut;
-use ringbuf::{traits::*, LocalRb};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use tungstenite::accept;
+use std::net::{IpAddr, SocketAddr};
 use anyhow::Result;
 use anyhow::anyhow;
 use clap::{FromArgMatches as _, Parser, Subcommand as _};
+use tungstenite::accept;
+use ringbuf::{traits::*, LocalRb};
 
 use freeswitch_rs::log::{info, debug};
 use freeswitch_rs::SWITCH_CHANNEL_ID_SESSION;
@@ -31,7 +31,10 @@ enum Subcommands {
 }
 
 fn parse_args(cmd_str:&str) -> Result<Subcommands> {
-    let mut cmd = Command::new("argparse").disable_version_flag(true).disable_help_flag(true);
+    let mut cmd = Command::new("argparse")
+        .disable_version_flag(true)
+        .disable_help_flag(true)
+        .no_binary_name(true);
     cmd = Subcommands::augment_subcommands(cmd);
     let matches = cmd.get_matches_from(cmd_str.split(' '));
     let s = Subcommands::from_arg_matches(&matches)?;
