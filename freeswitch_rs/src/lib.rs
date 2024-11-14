@@ -29,5 +29,4 @@ pub use fslog::SWITCH_CHANNEL_ID_SESSION;
 // macros
 pub use freeswitch_rs_macros::switch_module_define;
 pub use freeswitch_rs_macros::switch_api_define;
-pub use freeswitch_rs_macros::switch_module_load_function;
 

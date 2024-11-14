@@ -7,18 +7,18 @@
   }
 }:
 let
-  rust = pkgs.rust-bin.stable.latest.default.override { extensions = ["rust-src"]; };
+  rustc = pkgs.rust-bin.stable.latest.default.override { extensions = ["rust-src"]; };
   rustPlatform = pkgs.makeRustPlatform {
-    rustc = rust;
+    rustc = rustc;
     cargo = pkgs.rust-bin.stable.latest.default;
   };
 in
 pkgs.mkShell {
-  inputsFrom = [ (pkgs.callPackage ./default.nix { }) ];
-  buildInputs = with pkgs; [
-    rust-bin.stable.latest.rust-analyzer # LSP Server
-    rust-bin.stable.latest.rustfmt       # Formatter
-    rust-bin.stable.latest.clippy        # Linter
+  inputsFrom = [ (pkgs.callPackage ./default.nix { inherit rustPlatform; }) ];
+  buildInputs = [
+    pkgs.rust-bin.stable.latest.rust-analyzer # LSP Server
+    pkgs.rust-bin.stable.latest.rustfmt       # Formatter
+    pkgs.rust-bin.stable.latest.clippy        # Linter
   ];
-  RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library/";
+  RUST_SRC_PATH = "${rustc}/lib/rustlib/src/rust/library/";
 }

@@ -1,48 +1,46 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse::Parser, parse_macro_input};
+use syn::parse::Parser;
 
-
-// switch_module_define(mod_name, load)
-#[proc_macro]
-pub fn switch_module_define(_item: TokenStream) -> TokenStream {
-    let data = syn::punctuated::Punctuated::<syn::Type, syn::Token![,]>::parse_terminated
-    .parse2(_item.into())
+#[proc_macro_attribute]
+pub fn switch_module_define(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mod_struct = syn::parse_macro_input!(item as syn::ItemStruct);
+    let args = syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated
+    .parse2(attr.into())
     .unwrap();
-    impl_switch_module_define(data)
+
+    let mod_name =  args.get(0).and_then(|p| p.get_ident()).unwrap_or(&mod_struct.ident);
+    impl_switch_module_define(&mod_struct, &mod_name)
 }
 
-fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::token::Comma>) -> TokenStream {
-    let mod_name:&syn::Ident = args.get(0)
-        .and_then(|t| if let syn::Type::Path(p) = t {Some(p)} else {None} )
-        .and_then(|p| p.path.get_ident())
-        .expect("mod name should be valid");
-    let mod_name_string = mod_name.to_string().to_owned();
-    
-    let load_fn = args.get(1);
-    let mod_load_ident = format_ident!("{}_load", mod_name);
+fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name:&syn::Ident) -> TokenStream {
+    let struct_name = &ast.ident;
     let mod_interface_ident = format_ident!("{}_module_interface", mod_name);
+    let mod_name_string = mod_name.to_string().to_owned();
+
     let output = quote! {
-        
         // Wrap Load function 
         use std::io::Write;
 
-        unsafe extern "C" fn #mod_load_ident (
-            module_interface: *mut *mut freeswitch_rs::switch_loadable_module_interface_t,
-            pool: *mut freeswitch_rs::switch_memory_pool_t,
-        ) -> freeswitch_rs::switch_status_t {
+        #ast 
 
-            // init rust logger 
-            freeswitch_rs::log::set_logger(&freeswitch_rs::FS_LOG).expect("successful rust logger init");
-            freeswitch_rs::log::set_max_level(freeswitch_rs::log::LevelFilter::Debug);
+        impl #struct_name {
+            unsafe extern "C" fn load_wrapper (
+                module_interface: *mut *mut freeswitch_rs::switch_loadable_module_interface_t,
+                pool: *mut freeswitch_rs::switch_memory_pool_t,
+            ) -> freeswitch_rs::switch_status_t 
+            {
+                freeswitch_rs::log::set_logger(&freeswitch_rs::FS_LOG).expect("successful rust logger init");
+                freeswitch_rs::log::set_max_level(freeswitch_rs::log::LevelFilter::Debug);
 
-            let ptr = freeswitch_rs::FSModuleInterface::create(#mod_name_string, pool);
-            if ptr.is_null() { panic!("Module Creation Failed") }
-            *module_interface = *(&ptr);
+                let ptr = freeswitch_rs::FSModuleInterface::create(#mod_name_string, pool);
+                if ptr.is_null() { panic!("Module Creation Failed") }
+                *module_interface = *(&ptr);
 
-            let module = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
-            let pool = freeswitch_rs::FSModulePool::from_raw(pool);
-            #load_fn(module,pool)
+                let module = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
+                let pool = freeswitch_rs::FSModulePool::from_raw(pool);
+                #struct_name::load(module,pool)
+            }
         }
 
         // Module Table
@@ -50,7 +48,7 @@ fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::to
         #[allow(non_upper_case_globals)]
         pub static mut #mod_interface_ident: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
             switch_api_version: 5,
-            load: Some(#mod_load_ident),
+            load: Some(#struct_name::load_wrapper),
             shutdown: None,
             runtime: None,
             flags: 0,
@@ -59,40 +57,6 @@ fn impl_switch_module_define(args: syn::punctuated::Punctuated<syn::Type,syn::to
     eprintln!("TOKENS: {}", output);
     TokenStream::from(output)
 }
-
-#[proc_macro_attribute]
-pub fn switch_module_load_function(attr: TokenStream, item: TokenStream) -> TokenStream {
-    //let args = syn::parse_macro_input!(attr as syn::Attribute);
-    let ast = syn::parse_macro_input!(item as syn::ItemFn);
-    impl_switch_module_load_function(&ast)
-}
-
-fn impl_switch_module_load_function(ast: &syn::ItemFn) -> TokenStream {
-    let syn::ItemFn {
-        sig: syn::Signature { ident, .. },
-        block,
-        ..
-    } = ast;
-
-    let output = quote! {
-        // note: should we do this?
-        use std::io::Write;
-
-        unsafe extern "C" fn #ident (
-            module_interface: *mut *mut freeswitch_rs::switch_loadable_module_interface_t,
-            pool: *mut freeswitch_rs::switch_memory_pool_t,
-        ) -> freeswitch_rs::switch_status_t {
-
-            // NEED module name ...
-            *module_interface = switch_loadable_module_create_module_interface(pool, "");
-            let module = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
-            let pool = freeswitch_rs::FSModulePool::from_raw(pool);
-            #block
-        }
-    };
-    TokenStream::from(output)
-}
-
 
 
 #[proc_macro_attribute]

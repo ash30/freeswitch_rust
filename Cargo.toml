@@ -3,6 +3,7 @@
 members = [
     "freeswitch_sys",
     "freeswitch_rs",
-    #"mods/mod_audio_forkrs", 
-    "freeswitch_rs_macros", "mods/mod_hello_world",
+    "freeswitch_rs_macros",
+    "mods/mod_hello_world",
+    "mods/mod_audio_forkrs", 
 ]

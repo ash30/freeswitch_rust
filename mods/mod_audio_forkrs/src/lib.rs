@@ -1,17 +1,44 @@
-use clap::ArgAction;
-use clap::value_parser;
-use clap::{Command, Arg};
-use tokio::runtime::Runtime;
-use std::sync::OnceLock;
+use clap::Command;
+use std::borrow::Borrow;
+use std::borrow::BorrowMut;
+use std::net::{IpAddr, SocketAddr};
+use anyhow::Result;
+use anyhow::anyhow;
+use clap::{FromArgMatches as _, Parser, Subcommand as _};
+use tungstenite::accept;
+use ringbuf::{traits::*, LocalRb};
 
 use freeswitch_rs::log::{info, debug};
-use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
 use freeswitch_rs::SWITCH_CHANNEL_ID_SESSION;
 use freeswitch_rs::*;
 
-pub enum Error {
-    InvalidArguments,
-    RuntimeInit
+#[derive(Parser, Debug)]
+enum Subcommands {
+    Start {
+        #[arg()]
+        session: String,
+
+        #[arg()]
+        ip: String,
+
+        #[arg()]
+        port: u16,
+    },
+    Stop {
+        #[arg()]
+        session: String,
+    },
+}
+
+fn parse_args(cmd_str:&str) -> Result<Subcommands> {
+    let mut cmd = Command::new("argparse")
+        .disable_version_flag(true)
+        .disable_help_flag(true)
+        .no_binary_name(true);
+    cmd = Subcommands::augment_subcommands(cmd);
+    let matches = cmd.get_matches_from(cmd_str.split(' '));
+    let s = Subcommands::from_arg_matches(&matches)?;
+    Ok(s)
 }
 
 #[repr(C)]
@@ -19,80 +46,92 @@ struct Private {
     foo: u8
 }
 
-static RT: OnceLock<Runtime> = OnceLock::new();
+#[switch_module_define(mod_audiofork)]
+struct FSMod;
 
-switch_module_define!(mod_audiofork, load);
-
-#[switch_module_load_function]
-fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
-    info!(channel = SWITCH_CHANNEL_ID_LOG; "mod audiofork loading");
-    let _ = RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .build()
-            .unwrap()
-    });
-    module.add_api(api_main);
-    return switch_status_t::SWITCH_STATUS_SUCCESS
-}
-
-// =============
-
-#[switch_api_define("AudioFork")]
-fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
-    debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
-    match parse_args(cmd) {
-        Err(_) => {
-            write!(stream, "ERR: mod audiofork invalid usage");
-            switch_status_t::SWITCH_STATUS_FALSE
-        },
-        Ok(cmd) => {
-            if match cmd {
-                ModSubcommand::Start { session, url } => api_start(session, url),
-                ModSubcommand::Stop { .. } => Ok(())
-            }
-            .is_ok() { switch_status_t::SWITCH_STATUS_SUCCESS } 
-            else { switch_status_t::SWITCH_STATUS_FALSE }
-        }
+impl LoadableModule for FSMod {
+    fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
+        info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
+        module.add_api(api_main);
+        switch_status_t::SWITCH_STATUS_SUCCESS
     }
 }
 
-fn api_start(uuid:String, url:String) -> Result<(),Error> {
-    debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
-    // We can locate session and have RAII guard unlock for us when scope finishes
-    let s = Session::locate(&uuid).ok_or(Error::InvalidArguments)?;
-
-    // We can allocate arbitrary mod data types to session memory pool
-    // we ensure safety by only allowing session objects to deref back the handle's ptr
-    let data = Private { foo : 1};
-    let handle = s.insert(data).map_err(|_|Error::InvalidArguments)?;
-
-    //let (tx,rx) = tokio::sync::mpsc::unbounded_channel();
-    let rt = RT.get().ok_or(Error::RuntimeInit)?;
-    rt.spawn(async move {
-        // Setup WS 
-        loop {
-            //let Some(frame) = rx.recv().await else { break };
-            // send to ws 
+#[switch_api_define("ws_fork")]
+fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
+    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
+    match parse_args(cmd) {
+        Err(_) => {
+            let _ = write!(stream, "ERR: mod audiofork invalid usage");
+        },
+        Ok(cmd) => {
+            let _ = match cmd {
+                Subcommands::Start { session, ip, port} => api_start(session, ip, port),
+                Subcommands::Stop { session } => api_stop(session)
+            };
         }
-    });
+    }
+    switch_status_t::SWITCH_STATUS_SUCCESS
+}
 
-    // Closures with captured state simplifies user data retrieval
-    // Bug Callback will run on session thread/different thread, so any closure vars must be Send (assumedly)
-    let bug = s.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| { 
-        let mut s = bug.get_session();
+fn api_stop(uuid:String) -> Result<()>{
+    let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
+    Ok(())
+}
 
-        // Session data can only be retrieved from Sesssion Object which implies you have
-        // lock (again assumedly...)
-        let mut d = s.get_mut(&handle).unwrap();
-        d.as_mut().foo = 2;
+fn api_start(uuid:String, ip:String, port:u16) -> Result<()> {
+    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
 
-        // TODO:Ideally would unite enum with flags?
+    // We can locate session and have RAII guard unlock for us when scope finishes
+    let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
+    let mut buf = LocalRb::new(SWITCH_RECOMMENDED_BUFFER_SIZE);
+
+    let ip_addr = IpAddr::V4(ip.parse()?);
+    let addr = SocketAddr::new(ip_addr, port);
+    let stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1))?;
+    let mut ws = accept(stream).unwrap();
+
+    let bug = s.add_media_bug("".to_string(), "".to_string(), 0, move |mut bug, abc_type| { 
+        // For error handling, if we return false from closure
+        // FS will prune mal functioning bug ( ie remove it ) 
         match abc_type {
             switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
-            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {}
+            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
+                let _ = ws.close(None);
+            }
             switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                // Buffer and Send 
-                //tx.send(message)
+                let mut b = FrameBuffer::default();
+                loop {
+                    // read data from bug until FS returns non success 
+                    let Ok(n) = bug.read_frame(b.borrow_mut()) else { break };
+
+                    // in theory, `n` should be `decoded_bytes_per_packet` size
+                    if n == 0 { break }
+                    buf.push_slice_overwrite(b.borrow());
+
+                    // TODO: REALLY! want to remove this allocation ...
+                    let v:Vec<u8> = buf.pop_iter().collect();
+                    match ws.send(tungstenite::Message::binary(v)) {
+                        Err(tungstenite::Error::ConnectionClosed) => {
+                            info!(channel=SWITCH_CHANNEL_ID_SESSION; "ws connection closing for session fork: {}", uuid);
+                            // TODO Send event
+                            return false 
+                        },
+                        Err(tungstenite::Error::Io(e)) => if let std::io::ErrorKind::WouldBlock = e.kind() { 
+                            // Shouldn't get here...
+                        }
+                        Err(tungstenite::Error::WriteBufferFull(_)) => {
+                            // drop packets...
+                        },
+                        Err(e) => {
+                            // All other errors are considered fatal
+                            return false 
+                        },
+                        Ok(_) => {
+                            // continue 
+                        }
+                    }   
+                }
             }
             _ => {}
         };
@@ -101,50 +140,6 @@ fn api_start(uuid:String, url:String) -> Result<(),Error> {
     Ok(())
 }
 
-// ========
-
-pub enum ModSubcommand {
-    Start { session:String, url : String },
-    Stop { session: String },
-}
-
-fn parse_args(cmd_str:&str) -> Result<ModSubcommand,Error> {
-    let cmd = Command::new("prog")
-        .subcommand(Command::new("start")
-            .args(&[
-                  Arg::new("uuid")
-                        .value_parser(value_parser!(String))
-                        .action(ArgAction::Set)
-                        .required(true),
-                  Arg::new("url")
-                        .value_parser(value_parser!(String))
-                        .action(ArgAction::Set)
-                        .required(true)
-            ])
-        )
-        .subcommand(Command::new("stop")
-            .args(&[
-                  Arg::new("uuid")
-                        .value_parser(value_parser!(String))
-                        .action(ArgAction::Set)
-                        .required(true)
-            ])
-        );   
-
-    let m = cmd.try_get_matches_from(cmd_str.split(' ')).map_err(|_| Error::InvalidArguments)?;
-    match m.subcommand() {
-        Some(("start", m)) => {
-            let session = m.get_one::<String>("uuid").ok_or(Error::InvalidArguments)?;
-            let url =  m.get_one::<String>("url").ok_or(Error::InvalidArguments)?;
-            Ok(ModSubcommand::Start { url: url.to_owned(), session: session.to_owned() })
-        }
-        Some(("stop", m)) => {
-            let session = m.get_one::<String>("uuid").ok_or(Error::InvalidArguments)?;
-            Ok(ModSubcommand::Stop { session: session.to_owned() })
-        }
-        _ =>  Err(Error::InvalidArguments)
-    }
-}
 
 
 
