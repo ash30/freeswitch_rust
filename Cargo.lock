@@ -433,7 +433,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
-name = "mod_audiofolk"
+name = "mod_hello_world"
+version = "0.1.0"
+dependencies = [
+ "freeswitch_rs",
+]
+
+[[package]]
+name = "mod_wsfork"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -441,13 +448,6 @@ dependencies = [
  "freeswitch_rs",
  "freeswitch_sys",
  "ws",
-]
-
-[[package]]
-name = "mod_hello_world"
-version = "0.1.0"
-dependencies = [
- "freeswitch_rs",
 ]
 
 [[package]]
