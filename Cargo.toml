@@ -4,6 +4,7 @@ members = [
     "freeswitch_sys",
     "freeswitch_rs",
     "freeswitch_rs_macros",
+    "mods/utils/ws",
     "mods/mod_hello_world",
-    "mods/mod_audio_forkrs", 
+    "mods/mod_audio_forkrs", "mods/utils/ws", 
 ]

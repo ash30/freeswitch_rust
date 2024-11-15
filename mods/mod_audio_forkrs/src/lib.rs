@@ -1,16 +1,14 @@
-use clap::Command;
 use std::borrow::Borrow;
 use std::borrow::BorrowMut;
-use std::net::{IpAddr, SocketAddr};
 use anyhow::Result;
 use anyhow::anyhow;
-use clap::{FromArgMatches as _, Parser, Subcommand as _};
-use tungstenite::accept;
-use ringbuf::{traits::*, LocalRb};
+use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
 
 use freeswitch_rs::log::{info, debug};
-use freeswitch_rs::SWITCH_CHANNEL_ID_SESSION;
 use freeswitch_rs::*;
+use ws::WSForker;
+
+const BUG_CHANNEL_KEY: &core::ffi::CStr = c"_WS_FORK_BUG";
 
 #[derive(Parser, Debug)]
 enum Subcommands {
@@ -39,11 +37,6 @@ fn parse_args(cmd_str:&str) -> Result<Subcommands> {
     let matches = cmd.get_matches_from(cmd_str.split(' '));
     let s = Subcommands::from_arg_matches(&matches)?;
     Ok(s)
-}
-
-#[repr(C)]
-struct Private {
-    foo: u8
 }
 
 #[switch_module_define(mod_audiofork)]
@@ -76,6 +69,12 @@ fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> swit
 
 fn api_stop(uuid:String) -> Result<()>{
     let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
+    let mut c = s.get_channel();
+    // TODO: Can we make this safer?
+    let Some(bug) = c.get_private_unsafe(BUG_CHANNEL_KEY) else {
+        return Err(anyhow!("Bug Not Found: {}", uuid))
+    };
+    s.remove_media_bug(bug);
     Ok(())
 }
 
@@ -84,59 +83,35 @@ fn api_start(uuid:String, ip:String, port:u16) -> Result<()> {
 
     // We can locate session and have RAII guard unlock for us when scope finishes
     let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
-    let mut buf = LocalRb::new(SWITCH_RECOMMENDED_BUFFER_SIZE);
-
-    let ip_addr = IpAddr::V4(ip.parse()?);
-    let addr = SocketAddr::new(ip_addr, port);
-    let stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1))?;
-    let mut ws = accept(stream).unwrap();
+    let mut forker = WSForker::new(SWITCH_RECOMMENDED_BUFFER_SIZE);
+    forker.connect(ip, port)?;
 
     let bug = s.add_media_bug("".to_string(), "".to_string(), 0, move |mut bug, abc_type| { 
         // For error handling, if we return false from closure
         // FS will prune mal functioning bug ( ie remove it ) 
+        let mut should_continue = true;
         match abc_type {
             switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
-            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
-                let _ = ws.close(None);
-            }
+            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => forker.close(),
             switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
                 let mut b = FrameBuffer::default();
-                loop {
+                should_continue = loop {
                     // read data from bug until FS returns non success 
-                    let Ok(n) = bug.read_frame(b.borrow_mut()) else { break };
-
+                    let Ok(n) = bug.read_frame(b.borrow_mut()) else { break true };
                     // in theory, `n` should be `decoded_bytes_per_packet` size
-                    if n == 0 { break }
-                    buf.push_slice_overwrite(b.borrow());
-
-                    // TODO: REALLY! want to remove this allocation ...
-                    let v:Vec<u8> = buf.pop_iter().collect();
-                    match ws.send(tungstenite::Message::binary(v)) {
-                        Err(tungstenite::Error::ConnectionClosed) => {
-                            info!(channel=SWITCH_CHANNEL_ID_SESSION; "ws connection closing for session fork: {}", uuid);
-                            // TODO Send event
-                            return false 
-                        },
-                        Err(tungstenite::Error::Io(e)) => if let std::io::ErrorKind::WouldBlock = e.kind() { 
-                            // Shouldn't get here...
-                        }
-                        Err(tungstenite::Error::WriteBufferFull(_)) => {
-                            // drop packets...
-                        },
-                        Err(e) => {
-                            // All other errors are considered fatal
-                            return false 
-                        },
-                        Ok(_) => {
-                            // continue 
-                        }
-                    }   
-                }
+                    if n == 0 { break true }
+                    if !forker.fork(b.borrow()) { break false } else { continue };
+                };
             }
             _ => {}
         };
-        true
+        should_continue
     });
+
+    // TODO: handle bug result
+    let mut channel = s.get_channel();
+    channel.set_private(BUG_CHANNEL_KEY, bug.unwrap());
+
     Ok(())
 }
 

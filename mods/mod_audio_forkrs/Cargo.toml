@@ -7,15 +7,8 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-clap = { version = "4.5.21", features = ["derive"]} 
-tokio = { version = "1", features = ["full"] }
 freeswitch_sys = { path = "../../freeswitch_sys" }
 freeswitch_rs = { path = "../../freeswitch_rs" }
-ringbuf = "0.4.7"
-crossbeam-queue = "0.3.11"
-fastwebsockets = { version = "0.8.0", features = ["upgrade"] }
-hyper = "1.5.0"
-http-body-util = "0.1.2"
-hyper-util = { version ="0.1.10", features = ["tokio"] }
+ws = { path ="../utils/ws"}
+clap = { version = "4.5.21", features = ["derive"]} 
 anyhow = "1.0.92"
-tungstenite = "0.24.0"
