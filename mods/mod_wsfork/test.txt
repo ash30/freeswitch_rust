@@ -1,0 +1,220 @@
+#![feature(prelude_import)]
+#[prelude_import]
+use std::prelude::rust_2021::*;
+#[macro_use]
+extern crate std;
+use clap::ArgAction;
+use clap::value_parser;
+use clap::{Command, Arg};
+use tokio::runtime::Runtime;
+use std::io::Write;
+use std::sync::OnceLock;
+
+use freeswitch_rs::log::{info, debug};
+use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
+use freeswitch_rs::SWITCH_CHANNEL_ID_SESSION;
+use freeswitch_rs::*;
+
+pub enum Error { InvalidArguments, RuntimeInit, }
+
+#[repr(C)]
+struct Private {
+    foo: u8,
+}
+
+static RT: OnceLock<Runtime> = OnceLock::new();
+
+
+unsafe extern "C" fn load(module_interface:
+        *mut *mut freeswitch_sys::switch_loadable_module_interface_t,
+    pool: *mut freeswitch_sys::switch_memory_pool_t)
+    -> freeswitch_sys::switch_status_t {
+    let module = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
+    let pool = freeswitch_rs::FSModulePool::from_raw(pool);
+    {
+
+
+
+        // We can locate session and have RAII guard unlock for us when scope finishes
+
+        // We can allocate arbitrary mod data types to session memory pool
+        // we ensure safety by only allowing session objects to deref back the handle's ptr
+
+        // Setup WS 
+        // send to ws 
+
+        // Closures with captured state simplifies user data retrieval
+        // Bug Callback will run on session thread/different thread, so any closure vars must be Send (assumedly)
+
+        // Session data can only be retrieved from Sesssion Object which implies you have
+        // lock (again assumedly...)
+
+        // TODO:Ideally would unite enum with flags?
+        // Buffer and Send 
+        //tx.send(message)
+
+        // ========
+
+
+
+
+
+
+
+        {
+            let lvl = ::log::Level::Info;
+            if lvl <= ::log::STATIC_MAX_LEVEL && lvl <= ::log::max_level() {
+                    ::log::__private_api::log::<&_>(format_args!("mod audiofork loading"),
+                        lvl,
+                        &("mod_audiofolk", "mod_audiofolk",
+                                ::log::__private_api::loc()),
+                        &[("channel",
+                                        ::log::__private_api::capture_to_value(&&SWITCH_CHANNEL_ID_LOG))]);
+                }
+        };
+        let _ =
+            RT.get_or_init(||
+                    {
+                        tokio::runtime::Builder::new_multi_thread().build().unwrap()
+                    });
+        module.add_api(api_main);
+        return switch_status_t::SWITCH_STATUS_SUCCESS
+    }
+}
+#[allow(non_camel_case_types)]
+struct api_main;
+impl api_main {
+    fn api_main(cmd: &str, session: Option<Session>, mut stream: StreamHandle)
+        -> switch_status_t {
+        {
+            let lvl = ::log::Level::Debug;
+            if lvl <= ::log::STATIC_MAX_LEVEL && lvl <= ::log::max_level() {
+                    ::log::__private_api::log::<&_>(format_args!("mod audiofork cmd {0}",
+                            &cmd), lvl,
+                        &("mod_audiofolk", "mod_audiofolk",
+                                ::log::__private_api::loc()),
+                        &[("channel",
+                                        ::log::__private_api::capture_to_value(&&SWITCH_CHANNEL_ID_SESSION))]);
+                }
+        };
+        match parse_args(cmd) {
+            Err(e) => {
+                stream.write_fmt(format_args!("ERR: mod audiofork invalid usage"));
+                switch_status_t::SWITCH_STATUS_FALSE
+            }
+            Ok(cmd) => {
+                if match cmd {
+                                ModSubcommand::Start { session, url } =>
+                                    api_start(session, url),
+                                ModSubcommand::Stop { session } => Ok(()),
+                            }.is_ok() {
+                        switch_status_t::SWITCH_STATUS_SUCCESS
+                    } else { switch_status_t::SWITCH_STATUS_FALSE }
+            }
+        }
+    }
+}
+impl freeswitch_rs::ApiInterface for api_main {
+    const NAME: &'static str = "test";
+    const DESC: &'static str = "test";
+    fn api_fn(cmd: &str, session: Option<freeswitch_rs::Session>,
+        stream: freeswitch_rs::StreamHandle)
+        -> freeswitch_sys::switch_status_t {
+        api_main::api_main(cmd, session, stream)
+    }
+    unsafe extern "C" fn api_fn_raw(cmd: *const ::std::os::raw::c_char,
+        session: *mut freeswitch_sys::switch_core_session_t,
+        stream: *mut freeswitch_sys::switch_stream_handle_t)
+        -> freeswitch_sys::switch_status_t {
+        let c = std::ffi::CStr::from_ptr(cmd);
+        let session = None;
+        let stream = freeswitch_rs::StreamHandle::from_raw(stream);
+        api_main::api_fn(c.to_str().unwrap(), session, stream)
+    }
+}
+fn api_start(uuid: String, url: String) -> Result<(), Error> {
+    {
+        let lvl = ::log::Level::Debug;
+        if lvl <= ::log::STATIC_MAX_LEVEL && lvl <= ::log::max_level() {
+                ::log::__private_api::log::<&_>(format_args!("mod audiofork start uuid:{0}",
+                        uuid), lvl,
+                    &("mod_audiofolk", "mod_audiofolk",
+                            ::log::__private_api::loc()),
+                    &[("channel",
+                                    ::log::__private_api::capture_to_value(&&SWITCH_CHANNEL_ID_SESSION))]);
+            }
+    };
+    let s = Session::locate(&uuid).ok_or(Error::InvalidArguments)?;
+    let data = Private { foo: 1 };
+    let handle = s.insert(data).map_err(|_| Error::InvalidArguments)?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let rt = RT.get().ok_or(Error::RuntimeInit)?;
+    rt.spawn(async move
+            { loop { let Some(frame) = rx.recv().await else { break }; } });
+    let bug =
+        s.add_media_bug("".to_string(), "".to_string(), 0,
+            move |bug, abc_type|
+                {
+                    let mut s = bug.get_session();
+                    let mut d = s.get_mut(&handle).unwrap();
+                    d.as_mut().foo = 2;
+                    match abc_type {
+                        switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
+                        switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {}
+                        switch_abc_type_t::SWITCH_ABC_TYPE_READ => {}
+                        _ => {}
+                    };
+                    true
+                });
+    Ok(())
+}
+pub enum ModSubcommand {
+    Start {
+        session: String,
+        url: String,
+    },
+    Stop {
+        session: String,
+    },
+}
+fn parse_args(cmd_str: &str) -> Result<ModSubcommand, Error> {
+    let cmd =
+        Command::new("prog").subcommand(Command::new("start").args(&[Arg::new("uuid").value_parser({
+                                                use ::clap_builder::builder::via_prelude::*;
+                                                let auto =
+                                                    ::clap_builder::builder::_AutoValueParser::<String>::new();
+                                                (&&&&&&auto).value_parser()
+                                            }).action(ArgAction::Set).required(true),
+                                Arg::new("url").value_parser({
+                                                use ::clap_builder::builder::via_prelude::*;
+                                                let auto =
+                                                    ::clap_builder::builder::_AutoValueParser::<String>::new();
+                                                (&&&&&&auto).value_parser()
+                                            }).action(ArgAction::Set).required(true)])).subcommand(Command::new("stop").args(&[Arg::new("uuid").value_parser({
+                                            use ::clap_builder::builder::via_prelude::*;
+                                            let auto =
+                                                ::clap_builder::builder::_AutoValueParser::<String>::new();
+                                            (&&&&&&auto).value_parser()
+                                        }).action(ArgAction::Set).required(true)]));
+    let m =
+        cmd.try_get_matches_from(cmd_str.split(' ')).map_err(|_|
+                    Error::InvalidArguments)?;
+    match m.subcommand() {
+        Some(("start", m)) => {
+            let session =
+                m.get_one::<String>("uuid").ok_or(Error::InvalidArguments)?;
+            let url =
+                m.get_one::<String>("url").ok_or(Error::InvalidArguments)?;
+            Ok(ModSubcommand::Start {
+                    url: url.to_owned(),
+                    session: session.to_owned(),
+                })
+        }
+        Some(("stop", m)) => {
+            let session =
+                m.get_one::<String>("uuid").ok_or(Error::InvalidArguments)?;
+            Ok(ModSubcommand::Stop { session: session.to_owned() })
+        }
+        _ => Err(Error::InvalidArguments),
+    }
+}

@@ -24,6 +24,7 @@ fn main() {
 	    .allowlist_item("^switch_core_perform_session.*")
 	    .allowlist_item("^switch_log.*")
         .allowlist_item("^switch_core_media_bug.*")
+        .allowlist_item("^switch_channel.*")
         .allowlist_item("switch_loadable_module_function_table_t")
         .allowlist_item("switch_loadable_module_create_interface")
         .allowlist_item("switch_loadable_module_create_module_interface")

@@ -1,41 +1,21 @@
 use freeswitch_sys::*;
 use std::borrow::Borrow;
 use std::borrow::BorrowMut;
-use std::borrow::Cow;
 use std::ffi::c_void;
-use std::fmt::Pointer;
-use std::marker::PhantomData;
+use std::ffi::CStr;
 use std::mem;
 use std::ops::Deref;
-use std::ops::DerefMut;
 use std::ptr;
 use std::ffi::CString;
 
 use crate::utils::FSObject;
 use crate::utils::FSObjectMut;
 use crate::utils::FSHandle;
-pub struct SessionData<T>(T);
 
-unsafe impl<T> Send for SessionData<T> where T:Send {}
 
-impl <'a,T> AsRef<T> for FSObject<'a,SessionData<T>> {
-    fn as_ref(&self) -> &T {
-        unsafe { 
-            &((*self.ptr).0)
-        }
-    }
-}
+// ------------
 
-impl <'a,T> AsMut<T> for FSObjectMut<'a,SessionData<T>> {
-    fn as_mut(&mut self) -> &mut T {
-        unsafe { 
-            &mut((*self.ptr).0)
-        }
-    }
-}
-
-// =====
-
+#[derive(Debug, Clone, PartialEq)]
 pub enum SessionError {
     AllocationError
 }
@@ -43,9 +23,12 @@ pub enum SessionError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionUUID(String);
 
+// ------------
+
 pub type Session<'a> = FSObject<'a, switch_core_session_t>;
 
-// ===========
+// ------------
+
 pub struct LocateGuard<'a> {
     s: Session<'a> 
 }
@@ -67,6 +50,7 @@ impl<'a> Deref for LocateGuard<'a> {
     }
 }
 
+// ------------
 
 impl<'a> Session<'a> {
     pub fn locate(id:&str) -> Option<LocateGuard<'static>> {
@@ -88,7 +72,7 @@ impl<'a> Session<'a> {
 }
 
 impl<'a> Session<'a> {
-    pub fn insert<T:Sized + 'static>(&self, data:T) -> Result<FSHandle<SessionData<T>>, SessionError> {
+    pub fn insert<T:Sized + 'static>(&self, data:T) -> Result<FSHandle<T>, SessionError> {
             let file = CString::new(std::file!()).unwrap();
             let line = std::line!().try_into().unwrap_or(0);
             let func = CString::new("").unwrap();
@@ -96,15 +80,15 @@ impl<'a> Session<'a> {
         // SAFETY: 
         unsafe {
             let ptr = switch_core_perform_session_alloc(
-                self.ptr, std::mem::size_of::<SessionData<T>>(), 
+                self.ptr, std::mem::size_of::<T>(), 
                 file.as_ptr(),
                 func.as_ptr(),
                 line
             );
             if !ptr.is_null(){
-                let p = ptr.cast::<SessionData<T>>();
+                let p = ptr.cast::<T>();
                 let r = &mut *p;
-                _ = std::mem::replace(r, SessionData(data));
+                _ = std::mem::replace(r, data);
                 Ok(FSHandle{ ptr: p})
             }
             else {
@@ -121,6 +105,24 @@ impl<'a> Session<'a> {
 
     pub fn get_mut<T>(&mut self, k:&FSHandle<T>) -> Option<FSObjectMut<T>> {
         Some(FSObjectMut::from_raw(k.ptr))
+    }
+
+    pub fn get_channel(&self) -> Channel { 
+        unsafe {
+            let c = switch_core_session_get_channel(
+                self.ptr
+            );
+            FSObjectMut::from_raw(c)
+        }
+    }
+
+    // this will consume the handle... good! 
+    pub fn remove_media_bug(&self, mut bug:MediaBugHandle) {
+        if bug.ptr.is_null() { return }
+        unsafe {
+            let p: *mut *mut switch_media_bug_t = &mut bug.ptr;
+            switch_core_media_bug_remove(self.ptr, p);
+        }
     }
 
     pub fn add_media_bug<F>(&self, name:String, target:String, flags: switch_media_bug_flag_t, callback:F) 
@@ -155,6 +157,27 @@ impl<'a> Session<'a> {
         }
     }
 }
+// =====
+
+pub type Channel<'a> = FSObjectMut<'a, switch_channel_t>;
+
+//struct ChannelRecord(*mut c_void, std::any::TypeId);
+
+impl <'a> Channel<'a> {
+    pub fn set_private<T>(&mut self, key:&'static CStr, data:FSHandle<T>) where T:Sized {
+        unsafe {
+            switch_channel_set_private(self.ptr, key.as_ptr(), data.ptr as *mut c_void);
+        }
+    }
+
+    pub fn get_private_unsafe<T>(&mut self, key:&'static CStr) -> Option<FSHandle<T>> { 
+        unsafe {
+            let ptr = switch_channel_get_private(self.ptr, key.as_ptr());
+            if ptr.is_null() { return None }
+            Some(FSHandle{ptr:ptr as *mut T})
+        }
+    }
+}
 
 // =====
 pub type MediaBugHandle = FSHandle<switch_media_bug_t>;
@@ -184,13 +207,6 @@ impl <'a> MediaBug<'a> {
         unsafe {
             let ptr = switch_core_media_bug_get_session(self.ptr);
             Session::from_raw(ptr)
-        }
-    }
-
-    pub fn remove(mut self) {
-        let s = self.get_session();
-        unsafe {
-            switch_core_media_bug_remove(s.ptr, &mut self.ptr);
         }
     }
 
