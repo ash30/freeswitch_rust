@@ -8,4 +8,4 @@ bindgen = "0.69.4"
 cc = { version = "1.0", features = ["parallel"] }
 pkg-config = "0.3"
 
-[dependencies]
+

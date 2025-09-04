@@ -2,27 +2,24 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // Tell cargo to look for shared libraries in the specified directory
-    //println!("cargo:rustc-link-search=/path/to/lib");
+    let lib = pkg_config::Config::new()
+        .statik(false)
+        .probe("freeswitch")
+        .unwrap();
 
-    // Tell cargo to tell rustc to link the system bzip2
-    // shared library.
-    println!("cargo:rustc-link-lib=freeswitch");
-
-
-    // The bindgen::Builder is the main entry point
-    // to bindgen, and lets you build up options for
-    // the resulting bindings.
     let bindings = bindgen::Builder::default()
         // The input header we would like to generate
         // bindings for.
+        .clang_args(
+            lib.include_paths
+                .iter()
+                .map(|path| format!("-I{}", path.display())),
+        )
         .header("./include/wrapper.h")
-        // Tell cargo to invalidate the built crate whenever any of the
-        // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-	    .allowlist_item("^switch_core_session.*")
-	    .allowlist_item("^switch_core_perform_session.*")
-	    .allowlist_item("^switch_log.*")
+        .allowlist_item("^switch_core_session.*")
+        .allowlist_item("^switch_core_perform_session.*")
+        .allowlist_item("^switch_log.*")
         .allowlist_item("^switch_core_media_bug.*")
         .allowlist_item("^switch_channel.*")
         .allowlist_item("switch_loadable_module_function_table_t")
