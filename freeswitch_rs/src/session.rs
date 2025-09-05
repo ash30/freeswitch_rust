@@ -7,11 +7,10 @@ use std::ffi::CString;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
-use std::sync::mpsc::SendError;
 
 use crate::utils::FSHandle;
-use crate::utils::FSObject;
-use crate::utils::FSObjectMut;
+use crate::utils::FSScopedHandle;
+use crate::utils::FSScopedHandleMut;
 
 // ------------
 
@@ -25,7 +24,7 @@ pub struct SessionUUID(String);
 
 // ------------
 
-pub type Session<'a> = FSObject<'a, switch_core_session_t>;
+pub type Session<'a> = FSScopedHandle<'a, switch_core_session_t>;
 
 // ------------
 
@@ -61,7 +60,11 @@ impl<'a> Session<'a> {
         let func = CString::new("").unwrap();
         let s: CString = CString::new(id.to_owned()).unwrap();
 
-        // SAFETY:
+        // SAFETY
+        //
+        // you will be holding the session lock hence the lifetime
+        // is kinda owned by this ptr. You obviously don't want to hold
+        // for tooo long
         unsafe {
             let ptr =
                 switch_core_session_perform_locate(s.as_ptr(), file.as_ptr(), func.as_ptr(), line);
@@ -101,19 +104,23 @@ impl<'a> Session<'a> {
         }
     }
 
-    pub fn get<T>(&self, k: &FSHandle<T>) -> Option<FSObject<T>> {
-        // This should have same life time as &self right?
-        Some(FSObject::from_raw(k.ptr))
+    // SAFETY:
+    // The api requires an valid session ptr in order to read back the ptrs
+    // and also tie the life time to hence proving the session pool is still
+    // valid
+
+    pub fn get<T>(&'a self, k: &FSHandle<T>) -> Option<FSScopedHandle<'a, T>> {
+        Some(FSScopedHandle::from_raw(k.ptr))
     }
 
-    pub fn get_mut<T>(&mut self, k: &FSHandle<T>) -> Option<FSObjectMut<T>> {
-        Some(FSObjectMut::from_raw(k.ptr))
+    pub fn get_mut<T>(&'a mut self, k: &FSHandle<T>) -> Option<FSScopedHandleMut<'a, T>> {
+        Some(FSScopedHandleMut::from_raw(k.ptr))
     }
 
-    pub fn get_channel(&self) -> Channel {
+    pub fn get_channel(&self) -> Channel<'_> {
         unsafe {
             let c = switch_core_session_get_channel(self.ptr);
-            FSObjectMut::from_raw(c)
+            FSScopedHandleMut::from_raw(c)
         }
     }
 
@@ -167,7 +174,7 @@ impl<'a> Session<'a> {
 }
 // =====
 
-pub type Channel<'a> = FSObjectMut<'a, switch_channel_t>;
+pub type Channel<'a> = FSScopedHandleMut<'a, switch_channel_t>;
 
 //struct ChannelRecord(*mut c_void, std::any::TypeId);
 
@@ -194,7 +201,7 @@ impl<'a> Channel<'a> {
 
 // =====
 pub type MediaBugHandle = FSHandle<switch_media_bug_t>;
-pub type MediaBug<'a> = FSObject<'a, switch_media_bug_t>;
+pub type MediaBug<'a> = FSScopedHandle<'a, switch_media_bug_t>;
 impl<'a> MediaBug<'a> {
     unsafe extern "C" fn callback<F>(
         arg1: *mut switch_media_bug_t,
@@ -220,7 +227,12 @@ impl<'a> MediaBug<'a> {
         res
     }
 
-    pub fn get_session(&self) -> Session {
+    pub fn get_session(&self) -> Session<'_> {
+        // SAFETY
+        // Media bug lifetime is tied to session, so should be safe
+        // assuming media bug ptr is ok.
+        // life time of session handle will be tied to bug
+        // + assumingly you will be calling method within session thread
         unsafe {
             let ptr = switch_core_media_bug_get_session(self.ptr);
             Session::from_raw(ptr)
@@ -230,13 +242,13 @@ impl<'a> MediaBug<'a> {
     // The FS api doesn't offer much inspection of the error when calling
     // switch_core_media_bug_read - so how to understand IF its error or just not ready to read?
     // seems like a generic error value based on switch_status_t is the best we can do ?
-    pub fn read_frame(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
+    pub fn read_frame(&mut self, buf: &mut [u8]) -> Result<usize, switch_status_t> {
         let mut f = unsafe { mem::MaybeUninit::<switch_frame_t>::zeroed().assume_init() };
         f.data = buf.as_mut_ptr() as *mut c_void;
         f.buflen = buf.len().try_into().unwrap();
         let res = unsafe { switch_core_media_bug_read(self.ptr, &mut f, 1) };
         if res != switch_status_t::SWITCH_STATUS_SUCCESS {
-            Err(())
+            Err(res)
         } else {
             Ok(f.datalen.try_into().unwrap())
         }

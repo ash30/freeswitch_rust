@@ -6,29 +6,32 @@ use syn::parse::Parser;
 pub fn switch_module_define(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mod_struct = syn::parse_macro_input!(item as syn::ItemStruct);
     let args = syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated
-    .parse2(attr.into())
-    .unwrap();
+        .parse2(attr.into())
+        .unwrap();
 
-    let mod_name =  args.get(0).and_then(|p| p.get_ident()).unwrap_or(&mod_struct.ident);
+    let mod_name = args
+        .get(0)
+        .and_then(|p| p.get_ident())
+        .unwrap_or(&mod_struct.ident);
     impl_switch_module_define(&mod_struct, &mod_name)
 }
 
-fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name:&syn::Ident) -> TokenStream {
+fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> TokenStream {
     let struct_name = &ast.ident;
     let mod_interface_ident = format_ident!("{}_module_interface", mod_name);
     let mod_name_string = mod_name.to_string().to_owned();
 
     let output = quote! {
-        // Wrap Load function 
+        // Wrap Load function
         use std::io::Write;
 
-        #ast 
+        #ast
 
         impl #struct_name {
             unsafe extern "C" fn load_wrapper (
                 module_interface: *mut *mut freeswitch_rs::switch_loadable_module_interface_t,
                 pool: *mut freeswitch_rs::switch_memory_pool_t,
-            ) -> freeswitch_rs::switch_status_t 
+            ) -> freeswitch_rs::switch_status_t
             {
                 freeswitch_rs::log::set_logger(&freeswitch_rs::FS_LOG).expect("successful rust logger init");
                 freeswitch_rs::log::set_max_level(freeswitch_rs::log::LevelFilter::Debug);
@@ -54,10 +57,9 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name:&syn::Ident) -> Tok
             flags: 0,
         };
     };
-    eprintln!("TOKENS: {}", output);
+    //eprintln!("TOKENS: {}", output);
     TokenStream::from(output)
 }
-
 
 #[proc_macro_attribute]
 pub fn switch_api_define(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -67,11 +69,7 @@ pub fn switch_api_define(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
-    	let syn::ItemFn {
-        sig,
-        block,
-        ..
-	} = ast;
+    let syn::ItemFn { sig, block, .. } = ast;
 
     let name = &sig.ident;
     let output = quote! {
@@ -86,7 +84,7 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
             const NAME:&'static str = "test";
             const DESC:&'static str = "test";
             fn api_fn(cmd:&str, session:Option<freeswitch_rs::Session>, stream:freeswitch_rs::StreamHandle) -> freeswitch_rs::switch_status_t {
-                #name::#name(cmd,session,stream)                
+                #name::#name(cmd,session,stream)
             }
             unsafe extern "C" fn api_fn_raw(
                 cmd: *const ::std::os::raw::c_char,
@@ -105,6 +103,3 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
     //eprintln!("TOKENS: {}", output);
     TokenStream::from(output)
 }
-
-
-

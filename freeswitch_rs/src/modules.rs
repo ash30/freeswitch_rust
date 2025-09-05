@@ -1,5 +1,5 @@
 use crate::session::Session;
-use crate::utils::FSObject;
+use crate::utils::FSScopedHandle;
 use freeswitch_sys::switch_api_interface_t;
 use freeswitch_sys::switch_loadable_module_create_interface;
 use freeswitch_sys::switch_loadable_module_interface;
@@ -10,7 +10,7 @@ use freeswitch_sys::switch_stream_handle_t;
 use std::ffi::CString;
 use std::io::ErrorKind;
 
-pub type StreamHandle<'a> = FSObject<'a, switch_stream_handle_t>;
+pub type StreamHandle<'a> = FSScopedHandle<'a, switch_stream_handle_t>;
 
 impl<'a> std::io::Write for StreamHandle<'a> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -60,8 +60,8 @@ pub trait LoadableModule {
     }
 }
 
-pub type FSModuleInterface<'a> = FSObject<'a, *mut switch_loadable_module_interface>;
-pub type FSModulePool<'a> = FSObject<'a, switch_memory_pool_t>;
+pub type FSModuleInterface<'a> = FSScopedHandle<'a, *mut switch_loadable_module_interface>;
+pub type FSModulePool<'a> = FSScopedHandle<'a, switch_memory_pool_t>;
 
 impl<'a> FSModuleInterface<'a> {
     // SAFETY: DONT CALL
