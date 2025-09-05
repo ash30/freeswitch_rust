@@ -7,21 +7,30 @@ fn main() {
         .probe("freeswitch")
         .unwrap();
 
-    let bindings = bindgen::Builder::default()
-        // The input header we would like to generate
-        // bindings for.
+    let mut bindings = bindgen::Builder::default()
         .clang_args(
             lib.include_paths
                 .iter()
                 .map(|path| format!("-I{}", path.display())),
         )
         .header("./include/wrapper.h")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
+
+    bindings = bindings
+        // General
+        .allowlist_item("switch_status_t")
+        .newtype_enum("switch_status_t")
+        // Session
         .allowlist_item("^switch_core_session.*")
         .allowlist_item("^switch_core_perform_session.*")
+        // Logging
         .allowlist_item("^switch_log.*")
+        .allowlist_item("switch_log_printf")
+        .allowlist_item("switch_log_level_t")
+        .newtype_enum("switch_log_level_t")
+        // bugs
         .allowlist_item("^switch_core_media_bug.*")
-        .allowlist_item("^switch_channel.*")
+        // Mod Loading
         .allowlist_item("switch_loadable_module_function_table_t")
         .allowlist_item("switch_loadable_module_create_interface")
         .allowlist_item("switch_loadable_module_create_module_interface")
@@ -29,21 +38,16 @@ fn main() {
         .newtype_enum("switch_abc_type_t")
         .allowlist_item("switch_module_interface_name_t")
         .newtype_enum("switch_module_interface_name_t")
-        .allowlist_item("switch_log_printf")
-        .allowlist_item("switch_log_level_t")
-        .newtype_enum("switch_log_level_t")
+        // Channels
+        .allowlist_item("^switch_channel.*")
         .allowlist_item("switch_text_channel_t")
-        .newtype_enum("switch_text_channel_t")
-        .allowlist_item("switch_status_t")
-        .newtype_enum("switch_status_t")
-        // Finish the builder and generate the bindings.
-        .generate()
-        // Unwrap the Result and panic on failure.
-        .expect("Unable to generate bindings");
+        .newtype_enum("switch_text_channel_t");
 
-    // Write the bindings to the $OUT_DIR/bindings.rs file.
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+
     bindings
+        .generate()
+        .expect("Unable to generate bindings")
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
 }
