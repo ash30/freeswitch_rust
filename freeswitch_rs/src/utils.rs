@@ -36,3 +36,17 @@ impl<'a, T> FSScopedHandleMut<'a, T> {
         }
     }
 }
+
+// ---------
+
+macro_rules! call_with_meta {
+     ($func:ident, $($arg:expr),*) => {{
+        let file = CString::new(std::file!()).unwrap();
+        let line = std::line!().try_into().unwrap_or(0);
+        // TODO: fixme
+        let func = CString::new("").unwrap();
+        $func($($arg),*, file.as_ptr(), func.as_ptr(), line)
+     }}
+}
+
+pub(crate) use call_with_meta;

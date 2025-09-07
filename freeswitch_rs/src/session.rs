@@ -8,6 +8,7 @@ use std::mem;
 use std::ops::Deref;
 use std::ptr;
 
+use crate::utils::call_with_meta;
 use crate::utils::FSHandle;
 use crate::utils::FSScopedHandle;
 use crate::utils::FSScopedHandleMut;
@@ -52,22 +53,15 @@ impl<'a> Deref for LocateGuard<'a> {
 }
 
 // ------------
-
 impl<'a> Session<'a> {
     pub fn locate(id: &str) -> Option<LocateGuard<'static>> {
-        let file = CString::new(std::file!()).unwrap();
-        let line = std::line!().try_into().unwrap_or(0);
-        let func = CString::new("").unwrap();
         let s: CString = CString::new(id.to_owned()).unwrap();
 
         // SAFETY
-        //
-        // you will be holding the session lock hence the lifetime
-        // is kinda owned by this ptr. You obviously don't want to hold
-        // for tooo long
+        // Locating will take a read lock of any found session
+        // which we model as 'static shared reference ( via scoped handle )
         unsafe {
-            let ptr =
-                switch_core_session_perform_locate(s.as_ptr(), file.as_ptr(), func.as_ptr(), line);
+            let ptr = call_with_meta!(switch_core_session_perform_locate, s.as_ptr());
             if ptr.is_null() {
                 None
             } else {
@@ -80,19 +74,14 @@ impl<'a> Session<'a> {
 
 impl<'a> Session<'a> {
     pub fn insert<T: Sized + 'static>(&self, data: T) -> Result<FSHandle<T>, SessionError> {
-        let file = CString::new(std::file!()).unwrap();
-        let line = std::line!().try_into().unwrap_or(0);
-        let func = CString::new("").unwrap();
-
         // SAFETY:
         unsafe {
-            let ptr = switch_core_perform_session_alloc(
+            let ptr = call_with_meta!(
+                switch_core_perform_session_alloc,
                 self.ptr,
-                std::mem::size_of::<T>(),
-                file.as_ptr(),
-                func.as_ptr(),
-                line,
+                std::mem::size_of::<T>()
             );
+
             if !ptr.is_null() {
                 let p = ptr.cast::<T>();
                 let r = &mut *p;
