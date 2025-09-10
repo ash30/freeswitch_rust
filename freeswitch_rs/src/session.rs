@@ -4,6 +4,7 @@ use std::borrow::BorrowMut;
 use std::ffi::c_void;
 use std::ffi::CStr;
 use std::ffi::CString;
+use std::io::Read;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
@@ -227,17 +228,26 @@ impl<'a> MediaBug<'a> {
             Session::from_raw(ptr)
         }
     }
+}
 
+impl<'a> Read for MediaBug<'a> {
+    // Read may potentially return Zero and its ok to read again ( waiting on packets ? )
+    //
     // The FS api doesn't offer much inspection of the error when calling
     // switch_core_media_bug_read - so how to understand IF its error or just not ready to read?
     // seems like a generic error value based on switch_status_t is the best we can do ?
-    pub fn read_frame(&mut self, buf: &mut [u8]) -> Result<usize, switch_status_t> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut f = unsafe { mem::MaybeUninit::<switch_frame_t>::zeroed().assume_init() };
         f.data = buf.as_mut_ptr() as *mut c_void;
         f.buflen = buf.len().try_into().unwrap();
-        let res = unsafe { switch_core_media_bug_read(self.ptr, &mut f, 1) };
+
+        // SAFETY:
+        // Implementation needs to ensure that fs is given correct buf len
+        // technically its callers responsiblity to initialise the buffer, so we don't fill for now
+        let res =
+            unsafe { switch_core_media_bug_read(self.ptr, &mut f, switch_bool_t_SWITCH_FALSE) };
         if res != switch_status_t::SWITCH_STATUS_SUCCESS {
-            Err(res)
+            Err(std::io::Error::other(format!("switch status: {:?}", res)))
         } else {
             Ok(f.datalen.try_into().unwrap())
         }
