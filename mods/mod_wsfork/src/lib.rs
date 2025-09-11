@@ -7,14 +7,19 @@ use anyhow::anyhow;
 use anyhow::Result;
 use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
 
+use std::ffi::CStr;
 use std::sync::LazyLock;
 use tokio::net::TcpStream;
 
-use freeswitch_rs::log::{debug, info};
+use freeswitch_rs::log::{debug, error, info};
 use freeswitch_rs::*;
 use tokio::runtime::Runtime;
 
-const BUG_CHANNEL_KEY: &core::ffi::CStr = c"_WS_FORK_BUG";
+const BUG_CHANNEL_KEY: &CStr = c"_WS_FORK_BUG";
+
+const EVENT_CONNECT: &CStr = c"CONNECT";
+const EVENT_DISCONNECT: &CStr = c"DISCONNECT";
+const EVENT_ERROR: &CStr = c"ERROR";
 
 static RT: LazyLock<Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().build().unwrap());
@@ -52,6 +57,25 @@ impl LoadableModule for FSMod {
     fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
         module.add_api(api_main);
+
+        if Event::reserve_subclass(EVENT_CONNECT).is_err()
+            || Event::reserve_subclass(EVENT_DISCONNECT).is_err()
+            || Event::reserve_subclass(EVENT_ERROR).is_err()
+        {
+            error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to register custom events");
+            return switch_status_t::SWITCH_STATUS_TERM;
+        }
+
+        switch_status_t::SWITCH_STATUS_SUCCESS
+    }
+
+    fn shutdown() -> switch_status_t {
+        info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork shutdown");
+
+        let _ = Event::free_subclass(EVENT_CONNECT);
+        let _ = Event::free_subclass(EVENT_DISCONNECT);
+        let _ = Event::free_subclass(EVENT_ERROR);
+
         switch_status_t::SWITCH_STATUS_SUCCESS
     }
 }
@@ -64,10 +88,13 @@ fn api_main(cmd: &str, _session: Option<Session>, mut stream: StreamHandle) -> s
             let _ = write!(stream, "ERR: mod audiofork invalid usage");
         }
         Ok(cmd) => {
-            let _ = match cmd {
+            let res = match cmd {
                 Subcommands::Start { session, url } => api_start(session, url),
                 Subcommands::Stop { session } => api_stop(session),
             };
+            if let Err(e) = res {
+                error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork error: {}", &e);
+            }
         }
     }
     switch_status_t::SWITCH_STATUS_SUCCESS
