@@ -18,30 +18,29 @@ fn main() {
 
     bindings = bindings
         // General
-        .allowlist_item("switch_status_t")
-        .newtype_enum("switch_status_t")
+        .allowlist_file("*.switch_types.h")
+        .newtype_enum("^switch_status_t")
         // Session
         .allowlist_item("^switch_core_session.*")
         .allowlist_item("^switch_core_perform_session.*")
-        // Logging
-        .allowlist_item("^switch_log.*")
-        .allowlist_item("switch_log_printf")
-        .allowlist_item("switch_log_level_t")
-        .newtype_enum("switch_log_level_t")
         // bugs
         .allowlist_item("^switch_core_media_bug.*")
+        // Logging
+        .allowlist_item("^switch_log.*")
+        .newtype_enum("^switch_log_level_t")
         // Mod Loading
-        .allowlist_item("switch_loadable_module_function_table_t")
-        .allowlist_item("switch_loadable_module_create_interface")
-        .allowlist_item("switch_loadable_module_create_module_interface")
-        .allowlist_item("switch_.*?_interface_t")
-        .newtype_enum("switch_abc_type_t")
-        .allowlist_item("switch_module_interface_name_t")
-        .newtype_enum("switch_module_interface_name_t")
+        .allowlist_item("^switch_loadable_module_function_table_t")
+        .allowlist_item("^switch_loadable_module_create_interface")
+        .allowlist_item("^switch_loadable_module_create_module_interface")
+        .allowlist_item("^switch_.*?_interface_t")
+        .newtype_enum("^switch_abc_type_t")
+        .newtype_enum("^switch_module_interface_name_t")
+        // Events
+        .allowlist_item("^switch_event.*")
+        .newtype_enum("^switch_event_types_t")
         // Channels
         .allowlist_item("^switch_channel.*")
-        .allowlist_item("switch_text_channel_t")
-        .newtype_enum("switch_text_channel_t");
+        .newtype_enum("^switch_text_channel_t");
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
 
