@@ -38,8 +38,7 @@ impl<'a, T> FSScopedHandleMut<'a, T> {
 }
 
 // ---------
-
-macro_rules! call_with_meta {
+macro_rules! call_with_meta_suffix {
      ($func:ident, $($arg:expr),*) => {{
         let file = CString::new(std::file!()).unwrap();
         let line = std::line!().try_into().unwrap_or(0);
@@ -49,4 +48,14 @@ macro_rules! call_with_meta {
      }}
 }
 
-pub(crate) use call_with_meta;
+macro_rules! call_with_meta_prefix {
+     ($func:ident, $($arg:expr),*) => {{
+        let file = CString::new(std::file!()).unwrap();
+        let line = std::line!().try_into().unwrap_or(0);
+        let func = CString::new("").unwrap();
+        $func(file.as_ptr(), func.as_ptr(), line,$($arg),*)
+     }}
+}
+
+pub(crate) use call_with_meta_prefix;
+pub(crate) use call_with_meta_suffix;
