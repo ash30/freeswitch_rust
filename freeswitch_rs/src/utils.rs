@@ -1,5 +1,33 @@
-use std::marker::PhantomData;
+use freeswitch_sys::switch_status_t;
+use std::{error::Error, fmt::Display, marker::PhantomData};
 
+// Errors
+#[derive(Debug)]
+pub struct FSError(switch_status_t);
+impl From<switch_status_t> for FSError {
+    fn from(value: switch_status_t) -> Self {
+        assert!(value != switch_status_t::SWITCH_STATUS_SUCCESS);
+        Self(value)
+    }
+}
+impl From<FSError> for switch_status_t {
+    fn from(value: FSError) -> Self {
+        value.0
+    }
+}
+
+impl Display for FSError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
+impl Error for FSError {}
+
+pub type Result<T> = std::result::Result<T, FSError>;
+
+// ================
+//
 // Handles are wrappers over ptrs where we cannot
 // guarantee any lifetime!
 pub struct FSHandle<T> {
