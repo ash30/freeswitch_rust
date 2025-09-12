@@ -6,7 +6,8 @@ use std::{
 
 use crate::{call_with_meta_prefix, FSScopedHandleMut, Result};
 
-pub struct Event;
+#[repr(transparent)]
+pub struct Event(*mut switch_event_t);
 
 impl Event {
     pub fn reserve_subclass(name: &CStr) -> Result<()> {
@@ -31,19 +32,13 @@ impl Event {
         }
     }
 
-    pub fn new_custom_event(
-        subclass: String,
-    ) -> Result<FSScopedHandleMut<'static, switch_event_t>> {
+    pub fn new_custom_event(subclass: &CStr) -> Result<Self> {
         Event::new_core_event(switch_event_types_t::SWITCH_EVENT_CUSTOM, Some(subclass))
     }
 
-    pub fn new_core_event(
-        event: switch_event_types_t,
-        subclass: Option<String>,
-    ) -> Result<FSScopedHandleMut<'static, switch_event_t>> {
+    pub fn new_core_event(event: switch_event_types_t, subclass: Option<&CStr>) -> Result<Self> {
         let mut e: MaybeUninit<*mut switch_event_t> = MaybeUninit::zeroed();
 
-        let subclass = subclass.map(|s| CString::new(s).unwrap());
         let subclass_ptr = match subclass.as_ref() {
             None => std::ptr::null(),
             Some(s) => s.as_ptr(),
@@ -59,16 +54,14 @@ impl Event {
                 subclass_ptr
             );
             match res {
-                switch_status_t::SWITCH_STATUS_SUCCESS => {
-                    Ok(FSScopedHandleMut::from_raw(e.assume_init()))
-                }
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(Self(e.assume_init())),
                 other => Err(other.into()),
             }
         }
     }
 }
 
-impl FSScopedHandleMut<'static, switch_event_t> {
+impl Event {
     // its only really safe to fire/mutate newly owned events
     // hence implementing these methods only on Mutable Scoped Handle
 
@@ -80,15 +73,15 @@ impl FSScopedHandleMut<'static, switch_event_t> {
         unsafe {
             let res = call_with_meta_prefix!(
                 switch_event_fire_detailed,
-                &mut self.ptr,
+                &mut self.0,
                 std::ptr::null_mut()
             );
 
             match res {
                 switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
                 other => {
-                    if !self.ptr.is_null() {
-                        switch_event_destroy(&mut self.ptr);
+                    if !self.0.is_null() {
+                        switch_event_destroy(&mut self.0);
                     }
                     Err(other.into())
                 }

@@ -1,18 +1,17 @@
 use freeswitch_sys::*;
-use std::borrow::Borrow;
-use std::borrow::BorrowMut;
+use std::any::TypeId;
 use std::ffi::c_void;
-use std::ffi::CStr;
 use std::ffi::CString;
+use std::hash;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Read;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
 
 use crate::utils::call_with_meta_suffix;
-use crate::utils::FSHandle;
-use crate::utils::FSScopedHandle;
-use crate::utils::FSScopedHandleMut;
+use crate::Result;
 
 // ------------
 
@@ -26,60 +25,63 @@ pub struct SessionUUID(String);
 
 // ------------
 
-pub type Session<'a> = FSScopedHandle<'a, switch_core_session_t>;
+#[repr(transparent)]
+pub struct Session(*mut switch_core_session_t);
 
 // ------------
 
-pub struct LocateGuard<'a> {
-    s: Session<'a>,
-}
+pub struct LocateGuard(*mut switch_core_session_t);
 
-impl<'a> Drop for LocateGuard<'a> {
+impl Drop for LocateGuard {
     fn drop(&mut self) {
         // SAFETY: In theory this is safe because ptr is valid since we located Session
         // to create Session struct
-        unsafe {
-            if !self.s.ptr.is_null() {
-                switch_core_session_rwunlock(self.s.ptr)
-            }
+        if !self.0.is_null() {
+            unsafe { switch_core_session_rwunlock(self.0) }
         }
     }
 }
 
-impl<'a> Deref for LocateGuard<'a> {
-    type Target = Session<'a>;
+impl Deref for LocateGuard {
+    type Target = Session;
     fn deref(&self) -> &Self::Target {
-        &self.s
+        unsafe { &*(self.0 as *const Session) }
     }
 }
 
 // ------------
-impl<'a> Session<'a> {
-    pub fn locate(id: &str) -> Option<LocateGuard<'static>> {
+impl Session {
+    pub fn locate(id: &str) -> Option<LocateGuard> {
         let s: CString = CString::new(id.to_owned()).unwrap();
 
         // SAFETY
         // Locating will take a read lock of any found session
-        // which we model as 'static shared reference ( via scoped handle )
+        // so the reference to session can live as long as you own the guard
         unsafe {
             let ptr = call_with_meta_suffix!(switch_core_session_perform_locate, s.as_ptr());
             if ptr.is_null() {
                 None
             } else {
-                let s = Session::from_raw(ptr);
-                Some(LocateGuard { s })
+                Some(LocateGuard(ptr))
             }
         }
     }
 }
 
-impl<'a> Session<'a> {
-    pub fn insert<T: Sized + 'static>(&self, data: T) -> Result<FSHandle<T>, SessionError> {
-        // SAFETY:
+pub struct SessionOwned<T>(*mut T);
+
+impl Session {
+    pub fn alloc<T: Sized + 'static + Send>(
+        &self,
+        data: T,
+    ) -> std::result::Result<SessionOwned<T>, SessionError> {
+        // SAFETY: FS will alloc and finally dealloc on session end
+        // hence ownership will be passed to FS.
+        // TODO: is it safe to insert with just the read lock ?
         unsafe {
             let ptr = call_with_meta_suffix!(
                 switch_core_perform_session_alloc,
-                self.ptr,
+                self.0,
                 std::mem::size_of::<T>()
             );
 
@@ -87,41 +89,48 @@ impl<'a> Session<'a> {
                 let p = ptr.cast::<T>();
                 let r = &mut *p;
                 _ = std::mem::replace(r, data);
-                Ok(FSHandle { ptr: p })
+                Ok(SessionOwned(ptr as *mut T))
             } else {
                 Err(SessionError::AllocationError)
             }
         }
     }
 
-    // SAFETY:
-    // The api requires an valid session ptr in order to read back the ptrs
-    // and also tie the life time to hence proving the session pool is still
-    // valid
-
-    pub fn get<T>(&'a self, k: &FSHandle<T>) -> Option<FSScopedHandle<'a, T>> {
-        Some(FSScopedHandle::from_raw(k.ptr))
+    pub fn get<T>(&self, k: SessionOwned<T>) -> Option<&T>
+    where
+        T: 'static + Send,
+    {
+        if k.0.is_null() {
+            return None;
+        }
+        // SAFETY
+        // BY only allowing the dereference to happen via valid session,
+        // we should be ensuring the addr is valid
+        unsafe { Some(&*(k.0 as *const T)) }
     }
 
-    pub fn get_mut<T>(&'a mut self, k: &FSHandle<T>) -> Option<FSScopedHandleMut<'a, T>> {
-        Some(FSScopedHandleMut::from_raw(k.ptr))
-    }
-
-    pub fn get_channel(&self) -> Channel<'_> {
+    pub fn get_channel(&self) -> Option<Channel> {
         unsafe {
-            let c = switch_core_session_get_channel(self.ptr);
-            FSScopedHandleMut::from_raw(c)
+            let c = switch_core_session_get_channel(self.0);
+            if c.is_null() {
+                return None;
+            };
+            Some(Channel(c))
         }
     }
 
     // this will consume the handle... good!
-    pub fn remove_media_bug(&self, mut bug: MediaBugHandle) {
-        if bug.ptr.is_null() {
-            return;
+    pub fn remove_media_bug(&self, bug: SessionOwned<MediaBug>) -> Result<()> {
+        if bug.0.is_null() {
+            // Bug has already been removed
+            return Ok(());
         }
         unsafe {
-            let p: *mut *mut switch_media_bug_t = &mut bug.ptr;
-            switch_core_media_bug_remove(self.ptr, p);
+            let p: *mut *mut switch_media_bug_t = &mut (bug.0 as *mut switch_media_bug_t);
+            match switch_core_media_bug_remove(self.0, p) {
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
+                other => Err(other.into()),
+            }
         }
     }
 
@@ -131,9 +140,9 @@ impl<'a> Session<'a> {
         target: String,
         flags: switch_media_bug_flag_t,
         callback: F,
-    ) -> Result<MediaBugHandle, SessionError>
+    ) -> Result<SessionOwned<MediaBug>>
     where
-        F: FnMut(MediaBug, switch_abc_type_t) -> bool + 'static + Send,
+        F: FnMut(&mut MediaBug, switch_abc_type_t) -> bool + 'static + Send,
     {
         let data = Box::into_raw(Box::new(callback));
         let func = CString::new(name).unwrap();
@@ -144,7 +153,7 @@ impl<'a> Session<'a> {
         // SAFETY:
         unsafe {
             let res = switch_core_media_bug_add(
-                self.ptr,
+                self.0,
                 func.as_ptr(),
                 target.as_ptr(),
                 Some(MediaBug::callback::<F>),
@@ -153,57 +162,81 @@ impl<'a> Session<'a> {
                 flags,
                 &mut bug as *mut *mut switch_media_bug_t,
             );
-            if res == switch_status_t::SWITCH_STATUS_SUCCESS && !bug.is_null() {
-                let h = MediaBugHandle { ptr: bug };
-                Ok(h)
-            } else {
-                Err(SessionError::AllocationError)
+
+            match res {
+                switch_status_t::SWITCH_STATUS_SUCCESS => {
+                    if bug.is_null() {
+                        return Err(switch_status_t::SWITCH_STATUS_MEMERR.into());
+                    }
+                    Ok(SessionOwned(bug as *mut MediaBug))
+                }
+                other => Err(other.into()),
             }
         }
     }
 }
 // =====
 
-pub type Channel<'a> = FSScopedHandleMut<'a, switch_channel_t>;
+#[repr(transparent)]
+pub struct Channel(*mut switch_channel_t);
 
-//struct ChannelRecord(*mut c_void, std::any::TypeId);
-
-impl<'a> Channel<'a> {
-    pub fn set_private<T>(&mut self, key: &'static CStr, data: FSHandle<T>)
+impl Channel {
+    pub fn set_private<T>(&mut self, data: SessionOwned<T>) -> Result<()>
     where
-        T: Sized,
+        T: Sized + 'static,
     {
+        let mut h = hash::DefaultHasher::new();
+        TypeId::of::<T>().hash(&mut h);
+        let key = CString::new(h.finish().to_string()).unwrap();
+
+        // SAFETY:
+        //
         unsafe {
-            switch_channel_set_private(self.ptr, key.as_ptr(), data.ptr as *mut c_void);
+            match switch_channel_set_private(self.0, key.as_ptr(), data.0 as *mut c_void) {
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
+                other => Err(other.into()),
+            }
         }
     }
 
-    pub fn get_private_unsafe<T>(&mut self, key: &'static CStr) -> Option<FSHandle<T>> {
+    pub fn get_private<T>(&mut self) -> Option<SessionOwned<T>>
+    where
+        T: Sized + 'static,
+    {
+        let mut h = hash::DefaultHasher::new();
+        TypeId::of::<T>().hash(&mut h);
+        let key = CString::new(h.finish().to_string()).unwrap();
+
+        // SAFETY:
+        // We can sure be sure of the cast because key == typeid
+        // SessionOwned then ensures the dereference is safe
         unsafe {
-            let ptr = switch_channel_get_private(self.ptr, key.as_ptr());
+            let ptr = switch_channel_get_private(self.0, key.as_ptr());
             if ptr.is_null() {
                 return None;
             }
-            Some(FSHandle { ptr: ptr as *mut T })
+            Some(SessionOwned(ptr as *mut T))
         }
     }
 }
 
 // =====
-pub type MediaBugHandle = FSHandle<switch_media_bug_t>;
-pub type MediaBug<'a> = FSScopedHandle<'a, switch_media_bug_t>;
-impl<'a> MediaBug<'a> {
+
+#[repr(transparent)]
+pub struct MediaBug(*mut switch_media_bug_t);
+
+impl MediaBug {
     unsafe extern "C" fn callback<F>(
         arg1: *mut switch_media_bug_t,
         arg2: *mut ::std::os::raw::c_void,
         arg3: switch_abc_type_t,
     ) -> switch_bool_t
     where
-        F: FnMut(MediaBug, switch_abc_type_t) -> bool,
+        F: FnMut(&mut MediaBug, switch_abc_type_t) -> bool,
     {
         let callback_ptr = arg2 as *mut F;
         let callback = &mut *callback_ptr;
-        let bug = MediaBug::from_raw(arg1);
+        let bug = &mut *(arg1 as *mut MediaBug);
 
         let res = if callback(bug, arg3) {
             switch_bool_t_SWITCH_TRUE
@@ -211,26 +244,25 @@ impl<'a> MediaBug<'a> {
             switch_bool_t_SWITCH_FALSE
         };
 
+        // take back ownership of box so we can clean up
         if arg3 == switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE {
             let _ = Box::from_raw(arg2);
         }
         res
     }
 
-    pub fn get_session(&self) -> Session<'_> {
+    pub fn get_session(&self) -> &Session {
         // SAFETY
         // Media bug lifetime is tied to session, so should be safe
         // assuming media bug ptr is ok.
-        // life time of session handle will be tied to bug
-        // + assumingly you will be calling method within session thread
         unsafe {
-            let ptr = switch_core_media_bug_get_session(self.ptr);
-            Session::from_raw(ptr)
+            let ptr = switch_core_media_bug_get_session(self.0);
+            &*(ptr as *mut Session)
         }
     }
 }
 
-impl<'a> Read for MediaBug<'a> {
+impl Read for MediaBug {
     // Read may potentially return Zero and its ok to read again ( waiting on packets ? )
     //
     // The FS api doesn't offer much inspection of the error when calling
@@ -244,8 +276,7 @@ impl<'a> Read for MediaBug<'a> {
         // SAFETY:
         // Implementation needs to ensure that fs is given correct buf len
         // technically its callers responsiblity to initialise the buffer, so we don't fill for now
-        let res =
-            unsafe { switch_core_media_bug_read(self.ptr, &mut f, switch_bool_t_SWITCH_FALSE) };
+        let res = unsafe { switch_core_media_bug_read(self.0, &mut f, switch_bool_t_SWITCH_FALSE) };
         if res != switch_status_t::SWITCH_STATUS_SUCCESS {
             Err(std::io::Error::other(format!("switch status: {:?}", res)))
         } else {
@@ -257,22 +288,3 @@ impl<'a> Read for MediaBug<'a> {
 // ====
 // TODO: import properly
 pub const SWITCH_RECOMMENDED_BUFFER_SIZE: usize = 8192;
-pub struct FrameBuffer([u8; SWITCH_RECOMMENDED_BUFFER_SIZE]);
-
-impl Default for FrameBuffer {
-    fn default() -> Self {
-        Self([0; SWITCH_RECOMMENDED_BUFFER_SIZE])
-    }
-}
-
-impl Borrow<[u8]> for FrameBuffer {
-    fn borrow(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl BorrowMut<[u8]> for FrameBuffer {
-    fn borrow_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-}
