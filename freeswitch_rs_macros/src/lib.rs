@@ -40,8 +40,8 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
                 if ptr.is_null() { panic!("Module Creation Failed") }
                 *module_interface = *(&ptr);
 
-                let module = freeswitch_rs::FSModuleInterface::from_raw(module_interface);
-                let pool = freeswitch_rs::FSModulePool::from_raw(pool);
+                let pool = freeswitch_rs::FSModulePool(pool);
+                let module = freeswitch_rs::FSModuleInterface(module_interface);
                 #struct_name::load(module,pool)
             }
         }
@@ -83,7 +83,7 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
         impl freeswitch_rs::ApiInterface for #name {
             const NAME:&'static str = "test";
             const DESC:&'static str = "test";
-            fn api_fn(cmd:&str, session:Option<freeswitch_rs::Session>, stream:freeswitch_rs::StreamHandle) -> freeswitch_rs::switch_status_t {
+            fn api_fn(cmd:&str, session:Option<&freeswitch_rs::Session>, stream:freeswitch_rs::StreamHandle) -> freeswitch_rs::switch_status_t {
                 #name::#name(cmd,session,stream)
             }
             unsafe extern "C" fn api_fn_raw(
@@ -91,10 +91,10 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
                 session: *mut freeswitch_rs::switch_core_session_t,
                 stream: *mut freeswitch_rs::switch_stream_handle_t,
             ) -> freeswitch_rs::switch_status_t {
-                let c = std::ffi::CStr::from_ptr(cmd);
+                let cstr = std::ffi::CStr::from_ptr(cmd);
                 let session = None;
-                let stream = freeswitch_rs::StreamHandle::from_raw(stream);
-                #name::api_fn(c.to_str().unwrap(),session,stream)
+                let stream = freeswitch_rs::StreamHandle(stream);
+                #name::api_fn(cstr.to_str().unwrap(),session,stream)
             }
         }
     };

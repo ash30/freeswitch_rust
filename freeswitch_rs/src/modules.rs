@@ -1,5 +1,4 @@
 use crate::session::Session;
-use crate::utils::FSScopedHandle;
 use freeswitch_sys::switch_api_interface_t;
 use freeswitch_sys::switch_loadable_module_create_interface;
 use freeswitch_sys::switch_loadable_module_interface;
@@ -10,23 +9,24 @@ use freeswitch_sys::switch_stream_handle_t;
 use std::ffi::CString;
 use std::io::ErrorKind;
 
-pub type StreamHandle<'a> = FSScopedHandle<'a, switch_stream_handle_t>;
+#[repr(transparent)]
+pub struct StreamHandle(pub *mut switch_stream_handle_t);
 
-impl<'a> std::io::Write for StreamHandle<'a> {
+impl std::io::Write for StreamHandle {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         unsafe {
-            if self.ptr.is_null() {
+            if self.0.is_null() {
                 return std::io::Result::Err(std::io::Error::new(
                     ErrorKind::Other,
                     "No FSStream writer",
                 ));
             }
-            if let Some(w) = (*self.ptr).write_function {
+            if let Some(w) = (*self.0).write_function {
                 let cs = CString::new(buf)
                     .map_err(|_| std::io::Error::new(ErrorKind::InvalidData, ""))?;
                 // The fs writer function success implies the full buffer is written
                 // we don't get any real info on error
-                let res = (w)(self.ptr, cs.as_ptr());
+                let res = (w)(self.0, cs.as_ptr());
                 if res == switch_status_t::SWITCH_STATUS_SUCCESS {
                     Ok(buf.len())
                 } else {
@@ -60,10 +60,14 @@ pub trait LoadableModule {
     }
 }
 
-pub type FSModuleInterface<'a> = FSScopedHandle<'a, *mut switch_loadable_module_interface>;
-pub type FSModulePool<'a> = FSScopedHandle<'a, switch_memory_pool_t>;
+// We have to make ptr public to allow macros to create them...
+#[repr(transparent)]
+pub struct FSModuleInterface(pub *mut *mut switch_loadable_module_interface);
 
-impl<'a> FSModuleInterface<'a> {
+#[repr(transparent)]
+pub struct FSModulePool(pub *mut switch_memory_pool_t);
+
+impl FSModuleInterface {
     // SAFETY: DONT CALL
     pub unsafe fn create(
         name: &str,
@@ -79,8 +83,8 @@ impl<'a> FSModuleInterface<'a> {
         // SAFETY: We assume the module ptr given to us is valid
         // also we restrict access to the builder to ONLY the load function
         unsafe {
-            let ptr = switch_loadable_module_create_interface(*(self.ptr), t)
-                as *mut switch_api_interface_t;
+            let ptr =
+                switch_loadable_module_create_interface(*self.0, t) as *mut switch_api_interface_t;
             let interface = &mut *ptr;
             interface.interface_name = CString::new(T::NAME).unwrap().into_raw();
             interface.desc = CString::new(T::DESC).unwrap().into_raw();
@@ -94,7 +98,7 @@ pub trait ApiInterface {
     const DESC: &'static str;
     fn api_fn(
         cmd: &str,
-        session: Option<Session>,
+        session: Option<&Session>,
         stream: StreamHandle,
     ) -> freeswitch_sys::switch_status_t;
     unsafe extern "C" fn api_fn_raw(

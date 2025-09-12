@@ -4,7 +4,7 @@ use std::{
     mem::MaybeUninit,
 };
 
-use crate::{call_with_meta_prefix, FSScopedHandleMut, Result};
+use crate::{call_with_meta_prefix, Result};
 
 #[repr(transparent)]
 pub struct Event(*mut switch_event_t);

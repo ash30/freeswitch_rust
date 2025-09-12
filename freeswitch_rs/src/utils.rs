@@ -1,5 +1,5 @@
 use freeswitch_sys::switch_status_t;
-use std::{error::Error, fmt::Display, marker::PhantomData};
+use std::{error::Error, fmt::Display};
 
 // Errors
 #[derive(Debug)]
@@ -25,45 +25,6 @@ impl Display for FSError {
 impl Error for FSError {}
 
 pub type Result<T> = std::result::Result<T, FSError>;
-
-// ================
-//
-// Handles are wrappers over ptrs where we cannot
-// guarantee any lifetime!
-pub struct FSHandle<T> {
-    pub(crate) ptr: *mut T,
-}
-unsafe impl<T> Send for FSHandle<T> where T: Send {}
-
-// Scoped handles lifetime is usually defined by the
-// 'owning' object ( usually the session )
-pub struct FSScopedHandle<'a, T> {
-    pub(crate) ptr: *mut T,
-    lifetime: PhantomData<&'a T>,
-}
-
-impl<'a, T> FSScopedHandle<'a, T> {
-    pub fn from_raw(ptr: *mut T) -> FSScopedHandle<'a, T> {
-        Self {
-            ptr,
-            lifetime: PhantomData {},
-        }
-    }
-}
-
-pub struct FSScopedHandleMut<'a, T> {
-    pub(crate) ptr: *mut T,
-    lifetime: PhantomData<&'a mut T>,
-}
-
-impl<'a, T> FSScopedHandleMut<'a, T> {
-    pub fn from_raw(ptr: *mut T) -> FSScopedHandleMut<'a, T> {
-        Self {
-            ptr,
-            lifetime: PhantomData {},
-        }
-    }
-}
 
 // ---------
 macro_rules! call_with_meta_suffix {

@@ -15,8 +15,6 @@ use freeswitch_rs::log::{debug, error, info};
 use freeswitch_rs::*;
 use tokio::runtime::Runtime;
 
-const BUG_CHANNEL_KEY: &CStr = c"_WS_FORK_BUG";
-
 const EVENT_CONNECT: &CStr = c"CONNECT";
 const EVENT_DISCONNECT: &CStr = c"DISCONNECT";
 const EVENT_ERROR: &CStr = c"ERROR";
@@ -81,7 +79,7 @@ impl LoadableModule for FSMod {
 }
 
 #[switch_api_define("ws_fork")]
-fn api_main(cmd: &str, _session: Option<Session>, mut stream: StreamHandle) -> switch_status_t {
+fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
     debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
     match parse_args(cmd) {
         Err(_) => {
@@ -102,9 +100,9 @@ fn api_main(cmd: &str, _session: Option<Session>, mut stream: StreamHandle) -> s
 
 fn api_stop(uuid: String) -> Result<()> {
     let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
-    let mut c = s.get_channel();
+    let mut c = s.get_channel().unwrap();
     // TODO: Can we make this safer?
-    let Some(bug) = c.get_private_unsafe(BUG_CHANNEL_KEY) else {
+    let Some(bug) = c.get_private::<MediaBug>() else {
         return Err(anyhow!("Bug Not Found: {}", uuid));
     };
     s.remove_media_bug(bug);
@@ -159,6 +157,7 @@ fn api_start(uuid: String, url: String) -> Result<()> {
         // TODO: Errors
         let Ok(stream) = TcpStream::connect(url).await else {
             // TOD
+            let _ = Event::new_custom_event(EVENT_ERROR).and_then(|e| e.fire());
             return;
         };
 
@@ -167,8 +166,8 @@ fn api_start(uuid: String, url: String) -> Result<()> {
         }
     });
 
-    let mut channel = s.get_channel();
-    channel.set_private(BUG_CHANNEL_KEY, bug.unwrap());
+    let mut channel = s.get_channel().unwrap();
+    channel.set_private(bug.unwrap());
 
     Ok(())
 }

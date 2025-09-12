@@ -2,6 +2,7 @@ use freeswitch_sys::{switch_log_level_t, switch_log_printf, switch_text_channel_
 use log::{kv::Value, Log};
 use std::{ffi::CString, ptr::null};
 
+#[repr(transparent)]
 pub struct FSTextChannel(switch_text_channel_t);
 
 impl log::kv::ToValue for FSTextChannel {

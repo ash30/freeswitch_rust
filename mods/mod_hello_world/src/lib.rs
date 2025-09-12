@@ -1,4 +1,4 @@
-use freeswitch_rs::log::{info, debug};
+use freeswitch_rs::log::{debug, info};
 use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
 use freeswitch_rs::*;
 
@@ -14,9 +14,8 @@ impl LoadableModule for FSModule {
 }
 
 #[switch_api_define("hello_world")]
-fn api_main(cmd:&str, _session:Option<Session>, mut stream:StreamHandle) -> switch_status_t {
+fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
     debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod hello_world cmd {}", &cmd);
     let _ = writeln!(stream, "+OK Success");
     switch_status_t::SWITCH_STATUS_SUCCESS
 }
-
