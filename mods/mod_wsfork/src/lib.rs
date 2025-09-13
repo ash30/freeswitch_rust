@@ -101,11 +101,10 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
 fn api_stop(uuid: String) -> Result<()> {
     let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
     let mut c = s.get_channel().unwrap();
-    // TODO: Can we make this safer?
     let Some(bug) = c.get_private::<MediaBug>() else {
         return Err(anyhow!("Bug Not Found: {}", uuid));
     };
-    s.remove_media_bug(bug);
+    let _ = s.remove_media_bug(bug);
     Ok(())
 }
 
@@ -150,10 +149,10 @@ fn api_start(uuid: String, url: String) -> Result<()> {
             };
             should_continue
         },
-    );
+    )?;
 
     // run forker in background
-    tokio::spawn(async move {
+    RT.spawn(async move {
         // TODO: Errors
         let Ok(stream) = TcpStream::connect(url).await else {
             // TOD
@@ -167,7 +166,7 @@ fn api_start(uuid: String, url: String) -> Result<()> {
     });
 
     let mut channel = s.get_channel().unwrap();
-    channel.set_private(bug.unwrap());
+    channel.set_private(bug)?;
 
     Ok(())
 }

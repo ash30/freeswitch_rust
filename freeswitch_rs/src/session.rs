@@ -13,20 +13,8 @@ use std::ptr;
 use crate::utils::call_with_meta_suffix;
 use crate::Result;
 
-// ------------
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SessionError {
-    AllocationError,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionUUID(String);
-
-// ------------
-
-#[repr(transparent)]
-pub struct Session(*mut switch_core_session_t);
 
 // ------------
 
@@ -50,6 +38,12 @@ impl Deref for LocateGuard {
 }
 
 // ------------
+#[repr(transparent)]
+pub struct Session(*mut switch_core_session_t);
+
+// A marker container for resources allocated on a session's memory pool
+pub struct SessionOwned<T>(*mut T);
+
 impl Session {
     pub fn locate(id: &str) -> Option<LocateGuard> {
         let s: CString = CString::new(id.to_owned()).unwrap();
@@ -68,13 +62,8 @@ impl Session {
     }
 }
 
-pub struct SessionOwned<T>(*mut T);
-
 impl Session {
-    pub fn alloc<T: Sized + 'static + Send>(
-        &self,
-        data: T,
-    ) -> std::result::Result<SessionOwned<T>, SessionError> {
+    pub fn alloc<T: Sized + 'static + Send>(&self, data: T) -> Result<SessionOwned<T>> {
         // SAFETY: FS will alloc and finally dealloc on session end
         // hence ownership will be passed to FS.
         // TODO: is it safe to insert with just the read lock ?
@@ -91,7 +80,7 @@ impl Session {
                 _ = std::mem::replace(r, data);
                 Ok(SessionOwned(ptr as *mut T))
             } else {
-                Err(SessionError::AllocationError)
+                Err(switch_status_t::SWITCH_STATUS_MEMERR.into())
             }
         }
     }

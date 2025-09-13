@@ -62,10 +62,6 @@ impl Event {
 }
 
 impl Event {
-    // its only really safe to fire/mutate newly owned events
-    // hence implementing these methods only on Mutable Scoped Handle
-
-    // Null for user data, same as the normal macro
     pub fn fire(mut self) -> Result<()> {
         // SAFETY:
         // switch_event_fire_detailed cleans up memory
@@ -74,6 +70,7 @@ impl Event {
             let res = call_with_meta_prefix!(
                 switch_event_fire_detailed,
                 &mut self.0,
+                // Null for user data, same as the fs macro
                 std::ptr::null_mut()
             );
 
