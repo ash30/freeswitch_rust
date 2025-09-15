@@ -3,12 +3,13 @@ mod audio_fork;
 use audio_fork::create_request;
 use audio_fork::new_fork;
 
-use anyhow::anyhow;
 use anyhow::Result;
+use anyhow::anyhow;
 use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
 
 use std::ffi::CStr;
 use std::sync::LazyLock;
+use std::sync::Mutex;
 use tokio::net::TcpStream;
 
 use freeswitch_rs::log::{debug, error, info};
@@ -21,6 +22,18 @@ const EVENT_ERROR: &CStr = c"ERROR";
 
 static RT: LazyLock<Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().build().unwrap());
+
+// Private data stored on channel for mod usage
+struct Private {
+    bug: Mutex<Option<MediaBugHandle>>,
+}
+impl Private {
+    fn new(bug: MediaBugHandle) -> Self {
+        Self {
+            bug: Mutex::new(Some(bug)),
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 enum Subcommands {
@@ -100,11 +113,16 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
 
 fn api_stop(uuid: String) -> Result<()> {
     let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
-    let mut c = s.get_channel().unwrap();
-    let Some(bug) = c.get_private::<MediaBug>() else {
-        return Err(anyhow!("Bug Not Found: {}", uuid));
+    let channel = s.get_channel().unwrap();
+
+    let Some(data) = channel.get_private::<Private>() else {
+        return Err(anyhow!("Private Session data not Found: {}", uuid));
     };
-    let _ = s.remove_media_bug(bug);
+
+    // removing bug consumes the struct
+    if let Ok(Some(bug)) = data.bug.lock().map(|mut b| b.take()) {
+        s.remove_media_bug(bug)?;
+    }
     Ok(())
 }
 
@@ -114,42 +132,37 @@ fn api_start(uuid: String, url: String) -> Result<()> {
     let req = create_request(url.clone(), |req| {})?;
     let (mut handle, fork) = new_fork(req, SWITCH_RECOMMENDED_BUFFER_SIZE);
 
-    let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
-    let bug = s.add_media_bug(
-        "".to_string(),
-        "".to_string(),
-        0,
-        move |mut bug, abc_type| {
-            // For error handling, if we return false from closure
-            // FS will prune mal functioning bug ( ie remove it )
-            let mut should_continue = true;
-            match abc_type {
-                switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
-                switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => handle.close(),
-                switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                    should_continue = loop {
-                        // read data from bug until FS returns non success
-                        match handle.write(&mut bug) {
-                            None => {} // buffer was full ... flush
-                            Some(Ok(n)) => {
-                                if n == 0 {
-                                    break true; // nothing left
-                                }
-                                continue;
+    let session = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
+    let bug = session.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| {
+        // For error handling, if we return false from closure
+        // FS will prune mal functioning bug ( ie remove it )
+        let mut should_continue = true;
+        match abc_type {
+            switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
+            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => handle.close(),
+            switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
+                should_continue = loop {
+                    // read data from bug until FS returns non success
+                    match handle.write(bug) {
+                        None => {} // buffer was full ... flush
+                        Some(Ok(n)) => {
+                            if n == 0 {
+                                break true; // nothing left
                             }
-                            Some(Err(e)) => {
-                                // AN IO Error .... fail fast?
-                                // notify via event
-                                break false;
-                            }
+                            continue;
                         }
-                    };
-                }
-                _ => {}
-            };
-            should_continue
-        },
-    )?;
+                        Some(Err(e)) => {
+                            // AN IO Error .... fail fast?
+                            // notify via event
+                            break false;
+                        }
+                    }
+                };
+            }
+            _ => {}
+        };
+        should_continue
+    })?;
 
     // run forker in background
     let id = uuid.clone();
@@ -176,8 +189,9 @@ fn api_start(uuid: String, url: String) -> Result<()> {
         }
     });
 
-    let mut channel = s.get_channel().unwrap();
-    channel.set_private(bug)?;
+    // Set private data into channel for later retrieval
+    let channel = session.get_channel().unwrap();
+    channel.set_private(Box::new(Private::new(bug)))?;
 
     Ok(())
 }

@@ -41,9 +41,6 @@ impl Deref for LocateGuard {
 #[repr(transparent)]
 pub struct Session(*mut switch_core_session_t);
 
-// A marker container for resources allocated on a session's memory pool
-pub struct SessionOwned<T>(*mut T);
-
 impl Session {
     pub fn locate(id: &str) -> Option<LocateGuard> {
         let s: CString = CString::new(id.to_owned()).unwrap();
@@ -63,60 +60,25 @@ impl Session {
 }
 
 impl Session {
-    pub fn alloc<T: Sized + 'static + Send>(&self, data: T) -> Result<SessionOwned<T>> {
-        // SAFETY: FS will alloc and finally dealloc on session end
-        // hence ownership will be passed to FS.
-        // TODO: is it safe to insert with just the read lock ?
-        unsafe {
-            let ptr = call_with_meta_suffix!(
-                switch_core_perform_session_alloc,
-                self.0,
-                std::mem::size_of::<T>()
-            );
-
-            if !ptr.is_null() {
-                let p = ptr.cast::<T>();
-                let r = &mut *p;
-                _ = std::mem::replace(r, data);
-                Ok(SessionOwned(ptr as *mut T))
-            } else {
-                Err(switch_status_t::SWITCH_STATUS_MEMERR.into())
-            }
-        }
-    }
-
-    pub fn get<T>(&self, k: SessionOwned<T>) -> Option<&T>
-    where
-        T: 'static + Send,
-    {
-        if k.0.is_null() {
-            return None;
-        }
-        // SAFETY
-        // BY only allowing the dereference to happen via valid session,
-        // we should be ensuring the addr is valid
-        unsafe { Some(&*(k.0 as *const T)) }
-    }
-
-    pub fn get_channel(&self) -> Option<Channel> {
+    pub fn get_channel(&self) -> Option<&Channel> {
         unsafe {
             let c = switch_core_session_get_channel(self.0);
             if c.is_null() {
                 return None;
             };
-            Some(Channel(c))
+            Some(&*(c as *const Channel))
         }
     }
 
-    // this will consume the handle... good!
-    pub fn remove_media_bug(&self, bug: SessionOwned<MediaBug>) -> Result<()> {
-        if bug.0.is_null() {
-            // Bug has already been removed
-            return Ok(());
-        }
+    pub fn remove_media_bug(&self, mut bug: MediaBugHandle) -> Result<()> {
+        // SAFETY:
+        // FS will nullify the media bug ptr, so all me
         unsafe {
-            let p: *mut *mut switch_media_bug_t = &mut (bug.0 as *mut switch_media_bug_t);
-            match switch_core_media_bug_remove(self.0, p) {
+            if bug.0.is_null() {
+                // Bug has already been removed
+                return Ok(());
+            }
+            match switch_core_media_bug_remove(self.0, &mut bug.0) {
                 switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
                 other => Err(other.into()),
             }
@@ -129,7 +91,7 @@ impl Session {
         target: String,
         flags: switch_media_bug_flag_t,
         callback: F,
-    ) -> Result<SessionOwned<MediaBug>>
+    ) -> Result<MediaBugHandle>
     where
         F: FnMut(&mut MediaBug, switch_abc_type_t) -> bool + 'static + Send,
     {
@@ -157,7 +119,7 @@ impl Session {
                     if bug.is_null() {
                         return Err(switch_status_t::SWITCH_STATUS_MEMERR.into());
                     }
-                    Ok(SessionOwned(bug as *mut MediaBug))
+                    Ok(MediaBugHandle(bug))
                 }
                 other => Err(other.into()),
             }
@@ -167,28 +129,33 @@ impl Session {
 // =====
 
 #[repr(transparent)]
-pub struct Channel(*mut switch_channel_t);
+pub struct Channel(pub *mut switch_channel_t);
 
 impl Channel {
-    pub fn set_private<T>(&mut self, data: SessionOwned<T>) -> Result<()>
+    pub fn set_private<T>(&self, data: Box<T>) -> Result<&T>
     where
         T: Sized + 'static,
     {
         let mut h = hash::DefaultHasher::new();
         TypeId::of::<T>().hash(&mut h);
         let key = CString::new(h.finish().to_string()).unwrap();
+        let data_ptr = Box::into_raw(data);
 
         // SAFETY:
-        //
+        // FS will take a lock on channel insert / read so its safe to call
+        // with shared reference
+        // We store the raw box ptr and reconstruct it as a shared refererence on READ...
+        // the theory being, BOX<T> should be compatible with T* and hence we provide that as a
+        // reference - which means box drop shouldn't happen
         unsafe {
-            match switch_channel_set_private(self.0, key.as_ptr(), data.0 as *mut c_void) {
-                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
+            match switch_channel_set_private(self.0, key.as_ptr(), data_ptr as *mut c_void) {
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(&*(data_ptr as *const T)),
                 other => Err(other.into()),
             }
         }
     }
 
-    pub fn get_private<T>(&mut self) -> Option<SessionOwned<T>>
+    pub fn get_private<T>(&self) -> Option<&T>
     where
         T: Sized + 'static,
     {
@@ -198,13 +165,15 @@ impl Channel {
 
         // SAFETY:
         // We can sure be sure of the cast because key == typeid
-        // SessionOwned then ensures the dereference is safe
+        // Memory is owned by session so we assume channel existing proves
+        // mem pool is still there.
+        // FS locks on read so is safe to call with shared reference
         unsafe {
             let ptr = switch_channel_get_private(self.0, key.as_ptr());
             if ptr.is_null() {
                 return None;
             }
-            Some(SessionOwned(ptr as *mut T))
+            Some(&*(ptr as *const T))
         }
     }
 }
@@ -213,6 +182,9 @@ impl Channel {
 
 #[repr(transparent)]
 pub struct MediaBug(*mut switch_media_bug_t);
+
+#[repr(transparent)]
+pub struct MediaBugHandle(*mut switch_media_bug_t);
 
 impl MediaBug {
     unsafe extern "C" fn callback<F>(
@@ -243,7 +215,7 @@ impl MediaBug {
     pub fn get_session(&self) -> &Session {
         // SAFETY
         // Media bug lifetime is tied to session, so should be safe
-        // assuming media bug ptr is ok.
+        // assuming media bug ptr is ok which in the context of bug callback, should be
         unsafe {
             let ptr = switch_core_media_bug_get_session(self.0);
             &*(ptr as *mut Session)
@@ -252,7 +224,7 @@ impl MediaBug {
 }
 
 impl Read for MediaBug {
-    // Read may potentially return Zero and its ok to read again ( waiting on packets ? )
+    // Read may potentially return Zero and its ok to read again ( waiting on packets etc )
     //
     // The FS api doesn't offer much inspection of the error when calling
     // switch_core_media_bug_read - so how to understand IF its error or just not ready to read?
