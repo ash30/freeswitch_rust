@@ -152,16 +152,27 @@ fn api_start(uuid: String, url: String) -> Result<()> {
     )?;
 
     // run forker in background
-    RT.spawn(async move {
-        // TODO: Errors
-        let Ok(stream) = TcpStream::connect(url).await else {
-            // TOD
-            let _ = Event::new_custom_event(EVENT_ERROR).and_then(|e| e.fire());
-            return;
-        };
+    let id = uuid.clone();
+    let response_handler = async move {
+        let stream = TcpStream::connect(url).await.map_err(|e| anyhow!(e))?;
+        fork.run(stream).await?;
+        Ok::<(), anyhow::Error>(())
+    };
 
-        if let Err(e) = fork.run(stream).await {
-            // send event
+    RT.spawn(async move {
+        match response_handler.await {
+            Ok(()) => {}
+            Err(err) => {
+                let _ = Event::new_custom_event(EVENT_ERROR).and_then(|mut e| {
+                    if let Some(session) = Session::locate(&id)
+                        && let Some(channel) = session.get_channel()
+                    {
+                        e.set_channel_data(channel);
+                    }
+                    // need to set body...
+                    e.fire()
+                });
+            }
         }
     });
 
