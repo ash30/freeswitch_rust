@@ -4,7 +4,7 @@ use std::{
     mem::MaybeUninit,
 };
 
-use crate::{call_with_meta_prefix, Result};
+use crate::{call_with_meta_prefix, Channel, Result};
 
 #[repr(transparent)]
 pub struct Event(*mut switch_event_t);
@@ -62,6 +62,17 @@ impl Event {
 }
 
 impl Event {
+    pub fn set_channel_data(&mut self, channel: &Channel) {
+        // SAFETY:
+        // we assume channel holds a valid ptr, which is validated by
+        // structs returning the reference
+        // set_data methods will take profile lock for us so its safe to
+        // call with shared reference
+        unsafe {
+            switch_channel_event_set_data(channel.0, self.0);
+        }
+    }
+
     pub fn fire(mut self) -> Result<()> {
         // SAFETY:
         // switch_event_fire_detailed cleans up memory
