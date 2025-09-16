@@ -73,6 +73,21 @@ impl Event {
         }
     }
 
+    pub fn set_body<T>(&mut self, body: T) -> Result<()>
+    where
+        T: Into<Vec<u8>>,
+    {
+        let cstr = CString::new(body).map_err(|_e| switch_status_t::SWITCH_STATUS_GENERR)?;
+        // body is copied within fs, just make sure we free this side
+        unsafe {
+            let res = switch_event_set_body(self.0, cstr.as_ptr());
+            match res {
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
+                other => Err(other.into()),
+            }
+        }
+    }
+
     pub fn fire(mut self) -> Result<()> {
         // SAFETY:
         // switch_event_fire_detailed cleans up memory
