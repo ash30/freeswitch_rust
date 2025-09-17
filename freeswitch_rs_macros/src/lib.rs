@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::Parser;
+use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 #[proc_macro_attribute]
 pub fn switch_module_define(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -101,5 +102,31 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
 
     //eprintln!("TOKENS1: {}", sig.ident);
     //eprintln!("TOKENS: {}", output);
+    TokenStream::from(output)
+}
+
+#[proc_macro_attribute]
+pub fn switch_state_handler(_: TokenStream, item: TokenStream) -> TokenStream {
+    let ast = syn::parse_macro_input!(item as syn::ItemFn);
+    impl_switch_state_handler(&ast)
+}
+
+fn impl_switch_state_handler(ast: &syn::ItemFn) -> TokenStream {
+    let syn::ItemFn { sig, .. } = ast;
+    let name = &sig.ident;
+    let output = quote! {
+        mod #name {
+            use freeswitch_rs::Session;
+            use freeswitch_sys::switch_status_t;
+            use crate::*;
+            use super::*;
+            #ast
+        }
+
+        unsafe extern "C" fn #name(session: *mut freeswitch_sys::switch_core_session) -> freeswitch_sys::switch_status_t{
+            let s= freeswitch_rs::Session(session);
+            #name::#name(&s)
+        }
+    };
     TokenStream::from(output)
 }

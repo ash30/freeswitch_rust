@@ -32,3 +32,4 @@ pub use log;
 // macros
 pub use freeswitch_rs_macros::switch_api_define;
 pub use freeswitch_rs_macros::switch_module_define;
+pub use freeswitch_rs_macros::switch_state_handler;

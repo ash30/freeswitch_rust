@@ -39,7 +39,9 @@ fn main() {
         .allowlist_item("^switch_event.*")
         .newtype_enum("^switch_event_types_t")
         // Channels
+        .allowlist_item("^switch_state_handler.*")
         .allowlist_item("^switch_channel.*")
+        .newtype_enum("switch_channel_state_t")
         .newtype_enum("^switch_text_channel_t");
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());

@@ -39,7 +39,7 @@ impl Deref for LocateGuard {
 
 // ------------
 #[repr(transparent)]
-pub struct Session(*mut switch_core_session_t);
+pub struct Session(pub *mut switch_core_session_t);
 
 impl Session {
     pub fn locate(id: &str) -> Option<LocateGuard> {
