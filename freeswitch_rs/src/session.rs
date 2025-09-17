@@ -176,7 +176,17 @@ impl Channel {
             Some(&*(ptr as *const T))
         }
     }
+
+    pub fn add_state_handler(&self, table: &'static StateHandlerTable) -> Result<HandlerIndex> {
+        unsafe {
+            match switch_channel_add_state_handler(self.0, table) {
+                n if n < 0 => Err(switch_status_t::SWITCH_STATUS_GENERR.into()),
+                n => Ok(n.try_into().unwrap()),
+            }
+        }
+    }
 }
+type HandlerIndex = usize;
 
 // =====
 
@@ -249,3 +259,22 @@ impl Read for MediaBug {
 // ====
 // TODO: import properly
 pub const SWITCH_RECOMMENDED_BUFFER_SIZE: usize = 8192;
+
+// ====
+pub type StateHandlerTable = switch_state_handler_table_t;
+pub const DEFAULT_STATE_HANDLER_TABLE: StateHandlerTable = StateHandlerTable {
+    on_init: None,
+    on_execute: None,
+    on_hibernate: None,
+    on_destroy: None,
+    on_consume_media: None,
+    on_routing: None,
+    on_hangup: None,
+    on_exchange_media: None,
+    on_soft_execute: None,
+    on_reset: None,
+    on_park: None,
+    on_reporting: None,
+    padding: [ptr::null_mut(); 10],
+    flags: 0,
+};
