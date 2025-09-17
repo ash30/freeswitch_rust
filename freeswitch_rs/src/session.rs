@@ -132,7 +132,10 @@ impl Session {
 pub struct Channel(pub *mut switch_channel_t);
 
 impl Channel {
-    pub fn set_private<T>(&self, data: Box<T>) -> Result<&T>
+    // SAFETY:
+    // this is marked unsafe until we can avoid overwriting existing
+    // which could potentially leak overwritten
+    pub unsafe fn set_private<T>(&self, data: Box<T>) -> Result<&T>
     where
         T: Sized + 'static,
     {
@@ -174,6 +177,25 @@ impl Channel {
                 return None;
             }
             Some(&*(ptr as *const T))
+        }
+    }
+
+    pub unsafe fn remove_private<T: Sized + 'static>(&self) -> Option<Box<T>> {
+        let mut h = hash::DefaultHasher::new();
+        TypeId::of::<T>().hash(&mut h);
+        let key = CString::new(h.finish().to_string()).unwrap();
+
+        // SAFETY:
+        // Its only really safe to call this on session destroy
+        // as that should mean there are no outstanding shared references
+        unsafe {
+            let ptr = switch_channel_get_private(self.0, key.as_ptr());
+            if ptr.is_null() {
+                return None;
+            }
+            let data = Box::from_raw(ptr as *mut T);
+            switch_channel_set_private(self.0, key.as_ptr(), ptr::null());
+            Some(data)
         }
     }
 
