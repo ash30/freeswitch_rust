@@ -1,0 +1,11 @@
+[package]
+name = "wsfork_events"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "wsfork_events"
+
+[dependencies]
+schemars = "1.0.4"
+serde = "1.0.225"

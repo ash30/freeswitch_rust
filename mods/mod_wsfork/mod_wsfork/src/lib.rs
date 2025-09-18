@@ -1,5 +1,11 @@
 mod audio_fork;
 
+pub use wsfork_events::MOD_WSFORK_EVENT_CONNECT;
+pub use wsfork_events::MOD_WSFORK_EVENT_DISCONNECT;
+pub use wsfork_events::MOD_WSFORK_EVENT_ERROR;
+pub use wsfork_events::MOD_WSFORK_EVENT_SAMPLES_OVERRUN;
+use wsfork_events::WSForkEvent;
+
 use audio_fork::create_request;
 use audio_fork::new_fork;
 
@@ -7,18 +13,17 @@ use anyhow::Result;
 use anyhow::anyhow;
 use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
 
-use std::ffi::CStr;
+use freeswitch_rs::Session;
+use freeswitch_rs::switch_status_t;
+use serde_json::json;
+use std::io::ErrorKind;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use tokio::net::TcpStream;
-
-use freeswitch_rs::log::{debug, error, info};
-use freeswitch_rs::*;
 use tokio::runtime::Runtime;
 
-const EVENT_CONNECT: &CStr = c"CONNECT";
-const EVENT_DISCONNECT: &CStr = c"DISCONNECT";
-const EVENT_ERROR: &CStr = c"ERROR";
+use freeswitch_rs::log::{debug, error, info, warn};
+use freeswitch_rs::*;
 
 static RT: LazyLock<Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().build().unwrap());
@@ -69,9 +74,9 @@ impl LoadableModule for FSMod {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
         module.add_api(api_main);
 
-        if Event::reserve_subclass(EVENT_CONNECT).is_err()
-            || Event::reserve_subclass(EVENT_DISCONNECT).is_err()
-            || Event::reserve_subclass(EVENT_ERROR).is_err()
+        if Event::reserve_subclass(MOD_WSFORK_EVENT_CONNECT).is_err()
+            || Event::reserve_subclass(MOD_WSFORK_EVENT_DISCONNECT).is_err()
+            || Event::reserve_subclass(MOD_WSFORK_EVENT_ERROR).is_err()
         {
             error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to register custom events");
             return switch_status_t::SWITCH_STATUS_TERM;
@@ -83,9 +88,9 @@ impl LoadableModule for FSMod {
     fn shutdown() -> switch_status_t {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork shutdown");
 
-        let _ = Event::free_subclass(EVENT_CONNECT);
-        let _ = Event::free_subclass(EVENT_DISCONNECT);
-        let _ = Event::free_subclass(EVENT_ERROR);
+        let _ = Event::free_subclass(MOD_WSFORK_EVENT_CONNECT);
+        let _ = Event::free_subclass(MOD_WSFORK_EVENT_DISCONNECT);
+        let _ = Event::free_subclass(MOD_WSFORK_EVENT_ERROR);
 
         switch_status_t::SWITCH_STATUS_SUCCESS
     }
@@ -130,32 +135,26 @@ fn api_start(uuid: String, url: String) -> Result<()> {
     debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
 
     let req = create_request(url.clone(), |req| {})?;
-    let (mut handle, fork) = new_fork(req, SWITCH_RECOMMENDED_BUFFER_SIZE);
+    let (mut handle, fork) = new_fork(req, SWITCH_RECOMMENDED_BUFFER_SIZE * 256);
 
     let session = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
     let bug = session.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| {
         // For error handling, if we return false from closure
         // FS will prune mal functioning bug ( ie remove it )
-        let mut should_continue = true;
+        let should_continue = true;
         match abc_type {
             switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
             switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => handle.close(),
             switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                should_continue = loop {
-                    // read data from bug until FS returns non success
-                    match handle.write(bug) {
-                        None => {} // buffer was full ... flush
-                        Some(Ok(n)) => {
-                            if n == 0 {
-                                break true; // nothing left
-                            }
-                            continue;
-                        }
-                        Some(Err(e)) => {
-                            // AN IO Error .... fail fast?
-                            // notify via event
-                            break false;
-                        }
+                let n = 0; // TODO: exact size of packet
+                match handle.copy_samples(bug, n) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == ErrorKind::StorageFull => {
+                        debug!(channel=SWITCH_CHANNEL_ID_LOG; "Packets Dropped")
+                    }
+                    Err(e) => {
+                        error!(channel=SWITCH_CHANNEL_ID_LOG; "Error Reading frame for bug: {}", e);
+                        return false;
                     }
                 };
             }
@@ -176,13 +175,17 @@ fn api_start(uuid: String, url: String) -> Result<()> {
         match response_handler.await {
             Ok(()) => {}
             Err(err) => {
-                let _ = Event::new_custom_event(EVENT_ERROR).and_then(|mut e| {
+                let event = WSForkEvent {
+                    session: uuid,
+                    body: wsfork_events::Body::Error {},
+                };
+                let _ = Event::new_custom_event(event.tag()).and_then(|mut e| {
                     if let Some(session) = Session::locate(&id)
                         && let Some(channel) = session.get_channel()
                     {
                         e.set_channel_data(channel);
                     }
-                    // need to set body...
+                    let _ = e.set_body(serde_json::to_string(&event).unwrap_or_default());
                     e.fire()
                 });
             }
@@ -191,7 +194,26 @@ fn api_start(uuid: String, url: String) -> Result<()> {
 
     // Set private data into channel for later retrieval
     let channel = session.get_channel().unwrap();
-    channel.set_private(Box::new(Private::new(bug)))?;
+    unsafe {
+        channel.set_private(Box::new(Private::new(bug)))?;
+    }
+    let _ = channel.add_state_handler(&STATE_HANDLERS);
 
     Ok(())
 }
+
+// Rust data isn't allocated in the session memory pool currently
+// so there is a need to register a manual cleanup
+#[switch_state_handler]
+pub fn cleanup(s: &Session) -> switch_status_t {
+    unsafe {
+        // take back the box and let drop run
+        let _ = s.get_channel().map(|c| c.remove_private::<Private>());
+    }
+    switch_status_t::SWITCH_STATUS_SUCCESS
+}
+
+const STATE_HANDLERS: StateHandlerTable = StateHandlerTable {
+    on_destroy: Some(cleanup),
+    ..DEFAULT_STATE_HANDLER_TABLE
+};

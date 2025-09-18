@@ -1,19 +1,22 @@
 use anyhow::Result;
-use fastwebsockets::handshake;
 use fastwebsockets::Frame;
+use fastwebsockets::handshake;
 use http_body_util::Empty;
 use hyper::{
+    Request,
     body::Bytes,
     header::{CONNECTION, UPGRADE},
-    Request,
 };
 
 use hyper_util::rt::TokioExecutor;
+use ringbuf::HeapRb;
 use ringbuf::traits::Consumer;
 use ringbuf::traits::Producer;
 use ringbuf::traits::Split;
-use ringbuf::HeapRb;
+use std::io::Error;
+use std::io::ErrorKind;
 use std::io::Read;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -54,15 +57,36 @@ impl<B> AudioForkHandle<B>
 where
     B: Producer<Item = u8>,
 {
-    pub fn write<R>(&mut self, src: &mut R) -> Option<std::io::Result<usize>>
+    pub fn copy_samples<R>(&mut self, src: &mut R, size: usize) -> std::io::Result<()>
     where
         R: Read,
     {
-        let res = self.buf.read_from(src, None);
-        if res.is_some() {
-            self.read.notify_waiters()
-        };
-        res
+        if self.buf.vacant_len() < size {
+            return Err(Error::new(ErrorKind::UnexpectedEof, ""));
+        }
+        let (left, right) = self.buf.vacant_slices_mut();
+
+        let mut remaining = size;
+        for slice in vec![left, right] {
+            let start = slice.len();
+            let buf = &mut slice[..start];
+            buf.fill(MaybeUninit::new(0));
+            unsafe {
+                let buf = &mut *(slice as *mut [MaybeUninit<u8>] as *mut [u8]);
+                let n = src.read(buf)?;
+                remaining -= n;
+                if remaining == 0 {
+                    break;
+                };
+            }
+        }
+        if remaining != 0 {
+            return Err(Error::new(ErrorKind::Other, ""));
+        }
+        unsafe { self.buf.advance_write_index(size) };
+        self.read.notify_waiters();
+
+        Ok(())
     }
 
     pub fn close(&self) {
