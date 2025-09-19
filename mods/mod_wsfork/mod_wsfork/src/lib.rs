@@ -1,13 +1,11 @@
 mod audio_fork;
 
+use hyper_util::rt::TokioExecutor;
 pub use wsfork_events::MOD_WSFORK_EVENT_CONNECT;
 pub use wsfork_events::MOD_WSFORK_EVENT_DISCONNECT;
 pub use wsfork_events::MOD_WSFORK_EVENT_ERROR;
 pub use wsfork_events::MOD_WSFORK_EVENT_SAMPLES_OVERRUN;
 use wsfork_events::WSForkEvent;
-
-use audio_fork::create_request;
-use audio_fork::new_fork;
 
 use anyhow::Result;
 use anyhow::anyhow;
@@ -15,8 +13,6 @@ use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
 
 use freeswitch_rs::Session;
 use freeswitch_rs::switch_status_t;
-use serde_json::json;
-use std::io::ErrorKind;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use tokio::net::TcpStream;
@@ -24,6 +20,9 @@ use tokio::runtime::Runtime;
 
 use freeswitch_rs::log::{debug, error, info, warn};
 use freeswitch_rs::*;
+
+use crate::audio_fork::WSForkerError;
+use crate::audio_fork::new_wsfork;
 
 static RT: LazyLock<Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().build().unwrap());
@@ -133,9 +132,11 @@ fn api_stop(uuid: String) -> Result<()> {
 
 fn api_start(uuid: String, url: String) -> Result<()> {
     debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
+    let url = url::Url::parse(&url)?;
 
-    let req = create_request(url.clone(), |req| {})?;
-    let (mut handle, fork) = new_fork(req, SWITCH_RECOMMENDED_BUFFER_SIZE * 256);
+    let frame_size = 0;
+    let buf_duration = 0;
+    let (tx, rx) = new_wsfork(url.clone(), frame_size, buf_duration, |_| {})?;
 
     let session = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
     let bug = session.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| {
@@ -144,19 +145,23 @@ fn api_start(uuid: String, url: String) -> Result<()> {
         let should_continue = true;
         match abc_type {
             switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
-            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => handle.close(),
+            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {}
             switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                let n = 0; // TODO: exact size of packet
-                match handle.copy_samples(bug, n) {
-                    Ok(_) => {}
-                    Err(e) if e.kind() == ErrorKind::StorageFull => {
-                        debug!(channel=SWITCH_CHANNEL_ID_LOG; "Packets Dropped")
+                match tx.send_frame(bug) {
+                    Err(WSForkerError::Full) => {
+                        warn!(channel=SWITCH_CHANNEL_ID_LOG; "Buffer full + Packets dropped")
                     }
-                    Err(e) => {
-                        error!(channel=SWITCH_CHANNEL_ID_LOG; "Error Reading frame for bug: {}", e);
+                    Err(WSForkerError::Closed) => {
+                        // WS has closed, stop bug
+                        debug!(channel=SWITCH_CHANNEL_ID_LOG; "WS Closed, Pruning bug");
                         return false;
                     }
-                };
+                    Err(WSForkerError::ReadError(e)) => {
+                        error!(channel=SWITCH_CHANNEL_ID_LOG; "Bug Read Error");
+                        return false;
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         };
@@ -165,9 +170,12 @@ fn api_start(uuid: String, url: String) -> Result<()> {
 
     // run forker in background
     let id = uuid.clone();
+    let mut addrs = url.socket_addrs(|| None)?;
+    let addr = addrs.pop().ok_or(anyhow!(""))?;
     let response_handler = async move {
-        let stream = TcpStream::connect(url).await.map_err(|e| anyhow!(e))?;
-        fork.run(stream).await?;
+        let stream = TcpStream::connect(addr).await.map_err(|e| anyhow!(e))?;
+        let exeuctor = TokioExecutor::new();
+        rx.run(stream, exeuctor).await?;
         Ok::<(), anyhow::Error>(())
     };
 

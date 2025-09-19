@@ -7,27 +7,22 @@ use hyper::{
     body::Bytes,
     header::{CONNECTION, UPGRADE},
 };
+use url::Url;
 
-use hyper_util::rt::TokioExecutor;
-use ringbuf::HeapRb;
-use ringbuf::traits::Consumer;
-use ringbuf::traits::Producer;
-use ringbuf::traits::Split;
 use std::io::Error;
-use std::io::ErrorKind;
 use std::io::Read;
-use std::mem::MaybeUninit;
-use std::sync::Arc;
+use std::pin::Pin;
+use thingbuf::Recycle;
+use thingbuf::mpsc::errors::TrySendError;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
-use tokio::sync::Notify;
 
-type WSRequest = Request<Empty<Bytes>>;
+pub type WSRequest = Request<Empty<Bytes>>;
 
-pub fn create_request(url: String, customise: impl FnOnce(&mut WSRequest)) -> Result<WSRequest> {
+fn create_request(url: Url) -> Result<WSRequest> {
     Request::builder()
         .method("GET")
-        .uri(url)
+        .uri(url.as_str())
         .header(UPGRADE, "websocket")
         .header(CONNECTION, "upgrade")
         .header(
@@ -38,130 +33,91 @@ pub fn create_request(url: String, customise: impl FnOnce(&mut WSRequest)) -> Re
         .body(Empty::new())
         .map_err(|e| e.into())
 }
+type DataBuffer = Vec<u8>;
+struct DataBufferFactory(usize);
 
-pub struct AudioFork<B> {
+impl Recycle<DataBuffer> for DataBufferFactory {
+    fn recycle(&self, element: &mut DataBuffer) {
+        todo!()
+    }
+    fn new_element(&self) -> DataBuffer {
+        Vec::with_capacity(self.0)
+    }
+}
+
+pub enum WSForkerError {
+    Full,
+    Closed,
+    ReadError(Error),
+}
+impl From<TrySendError> for WSForkerError {
+    fn from(value: TrySendError) -> Self {
+        match value {
+            TrySendError::Full(_) => Self::Full,
+            _ => Self::Closed,
+        }
+    }
+}
+
+pub fn new_wsfork(
+    url: url::Url,
+    frame_size: usize,
+    buf_duration: usize, // TODO: change to time format
+    headers: impl FnOnce(&mut WSRequest),
+) -> Result<(WSForkSender, WSForkReceiver)> {
+    let (tx, rx) = thingbuf::mpsc::with_recycle(buf_duration, DataBufferFactory(frame_size));
+
+    let mut req = create_request(url)?;
+    (headers(&mut req));
+
+    Ok((WSForkSender { tx }, WSForkReceiver { req, rx }))
+}
+
+pub struct WSForkSender {
+    tx: thingbuf::mpsc::Sender<DataBuffer, DataBufferFactory>,
+}
+
+pub struct WSForkReceiver {
+    rx: thingbuf::mpsc::Receiver<DataBuffer, DataBufferFactory>,
     req: WSRequest,
-    read: Arc<Notify>,
-    stop: Arc<Notify>,
-    buf: B,
 }
 
-// Note: 4 candles!!!
-pub struct AudioForkHandle<B> {
-    read: Arc<Notify>,
-    stop: Arc<Notify>,
-    buf: B,
-}
-
-impl<B> AudioForkHandle<B>
-where
-    B: Producer<Item = u8>,
-{
-    pub fn copy_samples<R>(&mut self, src: &mut R, size: usize) -> std::io::Result<()>
+impl WSForkReceiver {
+    pub async fn run<S, E>(self, stream: S, executor: E) -> Result<()>
     where
-        R: Read,
+        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        // IE something that can spawn tasks
+        E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
     {
-        if self.buf.vacant_len() < size {
-            return Err(Error::new(ErrorKind::UnexpectedEof, ""));
-        }
-        let (left, right) = self.buf.vacant_slices_mut();
+        let (mut ws, res) = handshake::client(&executor, self.req, stream).await?;
+        ws.set_auto_close(true);
+        ws.set_writev(true);
 
-        let mut remaining = size;
-        for slice in vec![left, right] {
-            let start = slice.len();
-            let buf = &mut slice[..start];
-            buf.fill(MaybeUninit::new(0));
-            unsafe {
-                let buf = &mut *(slice as *mut [MaybeUninit<u8>] as *mut [u8]);
-                let n = src.read(buf)?;
-                remaining -= n;
-                if remaining == 0 {
-                    break;
-                };
-            }
+        loop {
+            let Some(frame) = self.rx.recv_ref().await else {
+                // Sender closed
+                break;
+            };
+
+            // Write errors will early return, we assume ws is foobar'd
+            ws.write_frame(Frame::binary(fastwebsockets::Payload::Borrowed(
+                frame.as_slice(),
+            )))
+            .await?;
         }
-        if remaining != 0 {
-            return Err(Error::new(ErrorKind::Other, ""));
-        }
-        unsafe { self.buf.advance_write_index(size) };
-        self.read.notify_waiters();
 
         Ok(())
     }
-
-    pub fn close(&self) {
-        self.stop.notify_waiters();
-    }
 }
 
-pub fn new_fork(
-    req: WSRequest,
-    buf_size: usize,
-) -> (
-    AudioForkHandle<impl Producer<Item = u8>>,
-    AudioFork<impl Consumer<Item = u8>>,
-) {
-    let stop = Arc::new(Notify::new());
-    let read = Arc::new(Notify::new());
+impl WSForkSender {
+    pub fn send_frame(&self, mut src: impl Read) -> std::result::Result<(), WSForkerError> {
+        let mut send_ref = self.tx.try_send_ref()?;
 
-    let rb = HeapRb::<u8>::new(buf_size);
-    let (buf_tx, buf_rx) = rb.split();
+        // TODO: Fix buf read
+        src.read(&mut send_ref).map_err(WSForkerError::ReadError)?;
 
-    (
-        AudioForkHandle {
-            buf: buf_tx,
-            stop: stop.clone(),
-            read: read.clone(),
-        },
-        AudioFork {
-            req,
-            stop: stop.clone(),
-            read: read.clone(),
-            buf: buf_rx,
-        },
-    )
-}
-
-impl<B> AudioFork<B>
-where
-    B: Consumer<Item = u8>,
-{
-    pub async fn run<S>(self, stream: S) -> Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    {
-        let exector = TokioExecutor::new();
-        let (mut ws, res) = handshake::client(&exector, self.req, stream).await?;
-        ws.set_auto_close(true);
-
-        loop {
-            tokio::select! {
-                _ = self.stop.notified() => {
-                    // TODO: WHAT REASON
-                    ws.write_frame(Frame::close(0, b"")).await;
-                    break
-                },
-                _ = self.read.notified() => {
-                    // READ ALL
-                    let slices = self.buf.as_slices();
-                    for b in [slices.0, slices.1] {
-                        // how much samples DO we want to send ?
-                        let sample_rate = 8000;
-                        let frame_payload_size = 2 * ( sample_rate / 1000) * 20;
-                        b.chunks(frame_payload_size).for_each( | data | {
-                            // TODO:
-                            ws.write_frame(Frame::binary(fastwebsockets::Payload::Borrowed(data)));
-                            unsafe {
-                                self.buf.advance_read_index(data.len());
-                            }
-
-                        });
-                    }
-
-                }
-            }
-        }
-
+        // on drop, we notify receiver
         Ok(())
     }
 }
