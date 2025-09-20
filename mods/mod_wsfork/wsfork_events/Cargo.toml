@@ -8,4 +8,4 @@ name = "wsfork_events"
 
 [dependencies]
 schemars = "1.0.4"
-serde = "1.0.225"
+serde = { version = "1.0.225", features = ["derive"] }

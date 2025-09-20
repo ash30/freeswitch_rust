@@ -1,6 +1,7 @@
 mod audio_fork;
 
 use hyper_util::rt::TokioExecutor;
+use wsfork_events::Body;
 pub use wsfork_events::MOD_WSFORK_EVENT_CONNECT;
 pub use wsfork_events::MOD_WSFORK_EVENT_DISCONNECT;
 pub use wsfork_events::MOD_WSFORK_EVENT_ERROR;
@@ -169,34 +170,40 @@ fn api_start(uuid: String, url: String) -> Result<()> {
     })?;
 
     // run forker in background
-    let id = uuid.clone();
     let mut addrs = url.socket_addrs(|| None)?;
     let addr = addrs.pop().ok_or(anyhow!(""))?;
-    let response_handler = async move {
-        let stream = TcpStream::connect(addr).await.map_err(|e| anyhow!(e))?;
-        let exeuctor = TokioExecutor::new();
-        rx.run(stream, exeuctor).await?;
-        Ok::<(), anyhow::Error>(())
+
+    let response_handler = move |change: Body| {
+        let _ = Event::new_custom_event(change.tag()).and_then(|mut fs_event| {
+            let data = WSForkEvent {
+                session: uuid.clone(),
+                body: change,
+            };
+            if let Some(session) = Session::locate(&uuid)
+                && let Some(channel) = session.get_channel()
+            {
+                fs_event.set_channel_data(channel);
+            }
+            let _ = fs_event.set_body(serde_json::to_string(&data).unwrap_or_default());
+            fs_event.fire()
+        });
     };
 
     RT.spawn(async move {
-        match response_handler.await {
+        // Run Rx Task to completion, firing FS events for changes
+        let res = async {
+            let stream = TcpStream::connect(addr).await.map_err(|e| anyhow!(e))?;
+            let exeuctor = TokioExecutor::new();
+            rx.run(stream, exeuctor, response_handler.clone()).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match res {
             Ok(()) => {}
-            Err(err) => {
-                let event = WSForkEvent {
-                    session: uuid,
-                    body: wsfork_events::Body::Error {},
-                };
-                let _ = Event::new_custom_event(event.tag()).and_then(|mut e| {
-                    if let Some(session) = Session::locate(&id)
-                        && let Some(channel) = session.get_channel()
-                    {
-                        e.set_channel_data(channel);
-                    }
-                    let _ = e.set_body(serde_json::to_string(&event).unwrap_or_default());
-                    e.fire()
-                });
-            }
+            Err(e) => response_handler(wsfork_events::Body::Error {
+                desc: format!("{:#}", e),
+            }),
         }
     });
 

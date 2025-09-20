@@ -14,8 +14,8 @@ pub struct WSForkEvent {
 #[serde(tag = "type")]
 pub enum Body {
     Connected {},
-    Disconnected {},
-    Error {},
+    Closed {},
+    Error { desc: String },
     Overrun {},
 }
 
@@ -24,13 +24,13 @@ pub const MOD_WSFORK_EVENT_DISCONNECT: &CStr = c"DISCONNECT";
 pub const MOD_WSFORK_EVENT_SAMPLES_OVERRUN: &CStr = c"OVERRUN";
 pub const MOD_WSFORK_EVENT_ERROR: &CStr = c"ERROR";
 
-impl WSForkEvent {
+impl Body {
     pub fn tag(&self) -> &'static CStr {
-        match self.body {
-            Body::Connected {} => MOD_WSFORK_EVENT_CONNECT,
-            Body::Disconnected {} => MOD_WSFORK_EVENT_DISCONNECT,
-            Body::Error {} => MOD_WSFORK_EVENT_ERROR,
-            Body::Overrun {} => MOD_WSFORK_EVENT_SAMPLES_OVERRUN,
+        match self {
+            Body::Connected { .. } => MOD_WSFORK_EVENT_CONNECT,
+            Body::Closed { .. } => MOD_WSFORK_EVENT_DISCONNECT,
+            Body::Error { .. } => MOD_WSFORK_EVENT_ERROR,
+            Body::Overrun { .. } => MOD_WSFORK_EVENT_SAMPLES_OVERRUN,
         }
     }
 }

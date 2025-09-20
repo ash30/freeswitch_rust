@@ -12,6 +12,7 @@ use url::Url;
 use std::io::Error;
 use std::io::Read;
 use std::pin::Pin;
+use std::time::Duration;
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
 use tokio::io::AsyncRead;
@@ -83,19 +84,26 @@ pub struct WSForkReceiver {
 }
 
 impl WSForkReceiver {
-    pub async fn run<S, E>(self, stream: S, executor: E) -> Result<()>
+    pub async fn run<S, E>(
+        self,
+        stream: S,
+        executor: E,
+        on_event: impl Fn(wsfork_events::Body),
+    ) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         // IE something that can spawn tasks
         E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
     {
-        let (mut ws, res) = handshake::client(&executor, self.req, stream).await?;
+        let (mut ws, _) = handshake::client(&executor, self.req, stream).await?;
         ws.set_auto_close(true);
         ws.set_writev(true);
+        on_event(wsfork_events::Body::Connected {});
 
         loop {
             let Some(frame) = self.rx.recv_ref().await else {
-                // Sender closed
+                let reason = "";
+                let _ = ws.write_frame(Frame::close(1000, reason.as_bytes())).await;
                 break;
             };
 
@@ -106,6 +114,7 @@ impl WSForkReceiver {
             .await?;
         }
 
+        on_event(wsfork_events::Body::Closed {});
         Ok(())
     }
 }
