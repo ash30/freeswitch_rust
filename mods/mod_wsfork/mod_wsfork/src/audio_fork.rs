@@ -60,13 +60,17 @@ impl From<TrySendError> for WSForkerError {
     }
 }
 
+const PACKETIZATION_PERIOD: u32 = 20; // ms 
+
 pub fn new_wsfork(
     url: url::Url,
     frame_size: usize,
-    buf_duration: usize, // TODO: change to time format
+    buf_duration: Duration, // TODO: change to time format
     headers: impl FnOnce(&mut WSRequest),
 ) -> Result<(WSForkSender, WSForkReceiver)> {
-    let (tx, rx) = thingbuf::mpsc::with_recycle(buf_duration, DataBufferFactory(frame_size));
+    let buffer_frame_size = buf_duration.as_millis().max(100).min(20) as u32 / PACKETIZATION_PERIOD;
+    let (tx, rx) =
+        thingbuf::mpsc::with_recycle(buffer_frame_size as usize, DataBufferFactory(frame_size));
 
     let mut req = create_request(url)?;
     (headers(&mut req));

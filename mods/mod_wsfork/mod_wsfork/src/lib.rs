@@ -16,6 +16,7 @@ use freeswitch_rs::Session;
 use freeswitch_rs::switch_status_t;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
 
@@ -136,7 +137,7 @@ fn api_start(uuid: String, url: String) -> Result<()> {
     let url = url::Url::parse(&url)?;
 
     let frame_size = 0;
-    let buf_duration = 0;
+    let buf_duration = Duration::from_millis(20);
     let (tx, rx) = new_wsfork(url.clone(), frame_size, buf_duration, |_| {})?;
 
     let session = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
