@@ -20,6 +20,8 @@ fn main() {
         // General
         .allowlist_file("*.switch_types.h")
         .newtype_enum("^switch_status_t")
+        .allowlist_item("switch_media_bug_flag.*")
+        .bitfield_enum("switch_media_bug_flag.*")
         // Session
         .allowlist_item("^switch_core_session.*")
         .allowlist_item("^switch_core_perform_session.*")

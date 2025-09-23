@@ -89,7 +89,7 @@ impl Session {
         &self,
         name: String,
         target: String,
-        flags: switch_media_bug_flag_t,
+        flags: MediaBugFlags,
         callback: F,
     ) -> Result<MediaBugHandle>
     where
@@ -110,7 +110,7 @@ impl Session {
                 Some(MediaBug::callback::<F>),
                 data as *mut c_void,
                 0,
-                flags,
+                flags.0,
                 &mut bug as *mut *mut switch_media_bug_t,
             );
 
@@ -211,6 +211,8 @@ impl Channel {
 type HandlerIndex = usize;
 
 // =====
+
+pub type MediaBugFlags = freeswitch_sys::switch_media_bug_flag_enum_t;
 
 #[repr(transparent)]
 pub struct MediaBug(*mut switch_media_bug_t);
