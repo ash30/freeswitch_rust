@@ -85,8 +85,8 @@ impl Session {
 
     pub fn add_media_bug<F>(
         &self,
-        name: String,
-        target: String,
+        function: Option<CString>,
+        target: Option<CString>,
         flags: MediaBugFlags,
         callback: F,
     ) -> Result<MediaBugHandle>
@@ -94,17 +94,14 @@ impl Session {
         F: FnMut(&mut MediaBug, switch_abc_type_t) -> bool + 'static + Send,
     {
         let data = Box::into_raw(Box::new(callback));
-        let func = CString::new(name).unwrap();
-        let target = CString::new(target).unwrap();
-
         let mut bug: *mut switch_media_bug_t = ptr::null_mut();
 
         // SAFETY:
         unsafe {
             let res = switch_core_media_bug_add(
                 self.0,
-                func.as_ptr(),
-                target.as_ptr(),
+                function.map(|f| f.as_ptr()).unwrap_or(ptr::null()),
+                target.map(|t| t.as_ptr()).unwrap_or(ptr::null()),
                 Some(MediaBug::callback::<F>),
                 data as *mut c_void,
                 0,
