@@ -1,5 +1,7 @@
 use anyhow::Result;
+use fastwebsockets::FragmentCollector;
 use fastwebsockets::Frame;
+use fastwebsockets::OpCode;
 use fastwebsockets::handshake;
 use http_body_util::Empty;
 use hyper::{
@@ -7,16 +9,19 @@ use hyper::{
     body::Bytes,
     header::{CONNECTION, UPGRADE},
 };
+use tokio::sync::Notify;
 use url::Url;
 
 use std::io::Error;
 use std::io::Read;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
+use tokio::pin;
 
 pub type WSRequest = Request<Empty<Bytes>>;
 
@@ -75,16 +80,26 @@ pub fn new_wsfork(
     let mut req = create_request(url)?;
     (headers(&mut req));
 
-    Ok((WSForkSender { tx }, WSForkReceiver { req, rx }))
+    let cancel = Arc::new(Notify::new());
+
+    Ok((
+        WSForkSender {
+            tx,
+            cancel: cancel.clone(),
+        },
+        WSForkReceiver { req, rx, cancel },
+    ))
 }
 
 pub struct WSForkSender {
     tx: thingbuf::mpsc::Sender<DataBuffer, DataBufferFactory>,
+    cancel: Arc<Notify>,
 }
 
 pub struct WSForkReceiver {
     rx: thingbuf::mpsc::Receiver<DataBuffer, DataBufferFactory>,
     req: WSRequest,
+    cancel: Arc<Notify>,
 }
 
 impl WSForkReceiver {
@@ -101,24 +116,76 @@ impl WSForkReceiver {
     {
         let (mut ws, _) = handshake::client(&executor, self.req, stream).await?;
         ws.set_auto_close(true);
+        ws.set_auto_pong(true);
         ws.set_writev(true);
+        let mut ws = FragmentCollector::new(ws);
         on_event(wsfork_events::Body::Connected {});
 
-        loop {
-            let Some(frame) = self.rx.recv_ref().await else {
-                let reason = "";
+        let close = 'outer: loop {
+            let fut = self.rx.recv_ref();
+            pin!(fut);
+
+            let cancel = self.cancel.notified();
+            pin!(cancel);
+
+            loop {
+                tokio::select! {
+                    // FS should cancel via notify
+                    // and the channel is only dropped if cleaning up an irregular case
+                    // either way exit the loop and notify WS
+                    _ = &mut cancel => {
+                        break 'outer None
+                    }
+                    next_send = &mut fut => {
+                        if let Some(frame) = next_send {
+                            ws.write_frame(Frame::binary(fastwebsockets::Payload::Borrowed(
+                                frame.as_slice(),
+                            ))).await?;
+                            break
+                        }
+                        else {
+                            break 'outer None;
+                        }
+                    }
+                    next_recv = ws.read_frame() => {
+                        let Frame { opcode, payload, .. } = next_recv?;
+                        match opcode {
+                            OpCode::Close => {
+                                break 'outer Some(payload)
+                            },
+                            OpCode::Text => {
+                                let content = String::from_utf8(payload.to_owned())
+                                    .unwrap_or_default();
+                                on_event(wsfork_events::Body::Message { content })
+                            },
+                            OpCode::Binary => {
+                                // NOT supported atm
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        };
+
+        let (code, reason) = match close {
+            None => {
+                let reason = "LOCAL CANCEL";
                 let _ = ws.write_frame(Frame::close(1000, reason.as_bytes())).await;
-                break;
-            };
+                (None, Some(reason.to_string()))
+            }
+            Some(p) => match p.len() {
+                0 => (None, None),
+                1 => (Some(1002), None),
+                2 => (Some(u16::from_be_bytes([p[0], p[1]])), None),
+                _ => (
+                    Some(u16::from_be_bytes([p[0], p[1]])),
+                    String::from_utf8(p[2..].to_vec()).ok(),
+                ),
+            },
+        };
 
-            // Write errors will early return, we assume ws is foobar'd
-            ws.write_frame(Frame::binary(fastwebsockets::Payload::Borrowed(
-                frame.as_slice(),
-            )))
-            .await?;
-        }
-
-        on_event(wsfork_events::Body::Closed {});
+        on_event(wsfork_events::Body::Closed { code, reason });
         Ok(())
     }
 }
@@ -132,5 +199,9 @@ impl WSForkSender {
 
         // on drop, we notify receiver
         Ok(())
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.notify_waiters();
     }
 }

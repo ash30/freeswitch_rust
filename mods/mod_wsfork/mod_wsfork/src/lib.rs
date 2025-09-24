@@ -2,10 +2,7 @@ mod audio_fork;
 
 use hyper_util::rt::TokioExecutor;
 use wsfork_events::Body;
-pub use wsfork_events::MOD_WSFORK_EVENT_CONNECT;
-pub use wsfork_events::MOD_WSFORK_EVENT_DISCONNECT;
-pub use wsfork_events::MOD_WSFORK_EVENT_ERROR;
-pub use wsfork_events::MOD_WSFORK_EVENT_SAMPLES_OVERRUN;
+pub use wsfork_events::MOD_WSFORK_EVENT;
 use wsfork_events::WSForkEvent;
 
 use anyhow::Result;
@@ -14,8 +11,10 @@ use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
 
 use freeswitch_rs::Session;
 use freeswitch_rs::switch_status_t;
+use std::ffi::CStr;
+use std::ffi::CString;
+use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::Mutex;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
@@ -26,19 +25,13 @@ use freeswitch_rs::*;
 use crate::audio_fork::WSForkerError;
 use crate::audio_fork::new_wsfork;
 
+const BUG_FN_NAME: &CStr = c"MOD_WSFORK_BUG";
+
 static RT: LazyLock<Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().build().unwrap());
 
-// Private data stored on channel for mod usage
-struct Private {
-    bug: Mutex<Option<MediaBugHandle>>,
-}
-impl Private {
-    fn new(bug: MediaBugHandle) -> Self {
-        Self {
-            bug: Mutex::new(Some(bug)),
-        }
-    }
+struct Foobar {
+    pub tx: audio_fork::WSForkSender,
 }
 
 #[derive(Parser, Debug)]
@@ -46,13 +39,16 @@ enum Subcommands {
     Start {
         #[arg()]
         session: String,
-
         #[arg()]
         url: String,
+        #[arg(default_value_t)]
+        bug_name: String,
     },
     Stop {
         #[arg()]
         session: String,
+        #[arg(default_value_t)]
+        bug_name: String,
     },
 }
 
@@ -75,10 +71,7 @@ impl LoadableModule for FSMod {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
         module.add_api(api_main);
 
-        if Event::reserve_subclass(MOD_WSFORK_EVENT_CONNECT).is_err()
-            || Event::reserve_subclass(MOD_WSFORK_EVENT_DISCONNECT).is_err()
-            || Event::reserve_subclass(MOD_WSFORK_EVENT_ERROR).is_err()
-        {
+        if Event::reserve_subclass(MOD_WSFORK_EVENT).is_err() {
             error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to register custom events");
             return switch_status_t::SWITCH_STATUS_TERM;
         }
@@ -88,11 +81,7 @@ impl LoadableModule for FSMod {
 
     fn shutdown() -> switch_status_t {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork shutdown");
-
-        let _ = Event::free_subclass(MOD_WSFORK_EVENT_CONNECT);
-        let _ = Event::free_subclass(MOD_WSFORK_EVENT_DISCONNECT);
-        let _ = Event::free_subclass(MOD_WSFORK_EVENT_ERROR);
-
+        let _ = Event::free_subclass(MOD_WSFORK_EVENT);
         switch_status_t::SWITCH_STATUS_SUCCESS
     }
 }
@@ -106,8 +95,12 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
         }
         Ok(cmd) => {
             let res = match cmd {
-                Subcommands::Start { session, url } => api_start(session, url),
-                Subcommands::Stop { session } => api_stop(session),
+                Subcommands::Start {
+                    session,
+                    url,
+                    bug_name,
+                } => api_start(session, url, bug_name),
+                Subcommands::Stop { session, bug_name } => api_stop(session, bug_name),
             };
             if let Err(e) = res {
                 error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork error: {}", &e);
@@ -117,70 +110,93 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     switch_status_t::SWITCH_STATUS_SUCCESS
 }
 
-fn api_stop(uuid: String) -> Result<()> {
-    let s = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
-    let channel = s.get_channel().unwrap();
-
-    let Some(data) = channel.get_private::<Private>() else {
-        return Err(anyhow!("Private Session data not Found: {}", uuid));
-    };
-
-    // removing bug consumes the struct
-    if let Ok(Some(bug)) = data.bug.lock().map(|mut b| b.take()) {
-        s.remove_media_bug(bug)?;
-    }
+fn api_stop(session_id: String, bug_name: String) -> Result<()> {
+    let key = CString::new(bug_name.clone())?;
+    let (session, bug) = Session::locate(&session_id)
+        .and_then(|s| unsafe {
+            s.get_channel()
+                .and_then(|c| c.get_private_with_key::<MediaBugHandle>(&key).cloned())
+                .map(|b| (s, b))
+        })
+        .ok_or(anyhow!(
+            "Unable to find bug {bug_name} for session {session_id}"
+        ))?;
+    session.remove_media_bug(bug)?;
     Ok(())
 }
 
-fn api_start(uuid: String, url: String) -> Result<()> {
-    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",uuid);
+fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
+    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",session_id);
+    let session =
+        Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
+
     let url = url::Url::parse(&url)?;
-
-    let frame_size = 0;
-    let buf_duration = Duration::from_millis(20);
-    let (tx, rx) = new_wsfork(url.clone(), frame_size, buf_duration, |_| {})?;
-
-    let session = Session::locate(&uuid).ok_or(anyhow!("Session Not Found: {}", uuid))?;
-    let bug = session.add_media_bug("".to_string(), "".to_string(), 0, move |bug, abc_type| {
-        // For error handling, if we return false from closure
-        // FS will prune mal functioning bug ( ie remove it )
-        let should_continue = true;
-        match abc_type {
-            switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {}
-            switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {}
-            switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                match tx.send_frame(bug) {
-                    Err(WSForkerError::Full) => {
-                        warn!(channel=SWITCH_CHANNEL_ID_LOG; "Buffer full + Packets dropped")
-                    }
-                    Err(WSForkerError::Closed) => {
-                        // WS has closed, stop bug
-                        debug!(channel=SWITCH_CHANNEL_ID_LOG; "WS Closed, Pruning bug");
-                        return false;
-                    }
-                    Err(WSForkerError::ReadError(e)) => {
-                        error!(channel=SWITCH_CHANNEL_ID_LOG; "Bug Read Error");
-                        return false;
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        };
-        should_continue
-    })?;
-
-    // run forker in background
     let mut addrs = url.socket_addrs(|| None)?;
     let addr = addrs.pop().ok_or(anyhow!(""))?;
 
+    let frame_size = 0;
+    let buf_duration = Duration::from_millis(20);
+
+    let (tx, rx) = new_wsfork(url.clone(), frame_size, buf_duration, |_| {})?;
+    let owned = Arc::new(Foobar { tx });
+    let weak_ref = Arc::downgrade(&owned);
+
+    let bug = session.add_media_bug(
+        Some(BUG_FN_NAME.into()),
+        None,
+        MediaBugFlags::SMBF_ONE_ONLY,
+        move |bug, abc_type| {
+            // For error handling, if we return false from closure
+            // FS will prune mal functioning bug ( ie remove it )
+            let Some(handle) = weak_ref.upgrade() else {
+                return false;
+            };
+            match abc_type {
+                switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
+                    handle.tx.cancel();
+                }
+                switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
+                    match handle.tx.send_frame(bug) {
+                        Err(WSForkerError::Full) => {
+                            warn!(channel=SWITCH_CHANNEL_ID_LOG; "Buffer full + Packets dropped")
+                        }
+                        Err(WSForkerError::Closed) => {
+                            // WS has closed, stop bug
+                            debug!(channel=SWITCH_CHANNEL_ID_LOG; "WS Closed, Pruning bug");
+                            return false;
+                        }
+                        Err(WSForkerError::ReadError(e)) => {
+                            error!(channel=SWITCH_CHANNEL_ID_LOG; "Bug Read Error {e}");
+                            return false;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            };
+            true // continue 
+        },
+    )?;
+
+    let res = {
+        let channel = session.get_channel().ok_or(anyhow!("missing channel"))?;
+        let key = CString::new(bug_name).unwrap();
+        channel.set_private_with_key(&key, bug.clone())?;
+        Ok(())
+    };
+    if let Err(err) = res {
+        error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to record bug in channel: {err}");
+        let _ = session.remove_media_bug(bug);
+        return Err(err);
+    }
+
     let response_handler = move |change: Body| {
-        let _ = Event::new_custom_event(change.tag()).and_then(|mut fs_event| {
+        let _ = Event::new_custom_event(MOD_WSFORK_EVENT).and_then(|mut fs_event| {
             let data = WSForkEvent {
-                session: uuid.clone(),
+                session: session_id.clone(),
                 body: change,
             };
-            if let Some(session) = Session::locate(&uuid)
+            if let Some(session) = Session::locate(&session_id)
                 && let Some(channel) = session.get_channel()
             {
                 fs_event.set_channel_data(channel);
@@ -206,30 +222,8 @@ fn api_start(uuid: String, url: String) -> Result<()> {
                 desc: format!("{:#}", e),
             }),
         }
+        drop(owned);
     });
-
-    // Set private data into channel for later retrieval
-    let channel = session.get_channel().unwrap();
-    unsafe {
-        channel.set_private(Box::new(Private::new(bug)))?;
-    }
-    let _ = channel.add_state_handler(&STATE_HANDLERS);
 
     Ok(())
 }
-
-// Rust data isn't allocated in the session memory pool currently
-// so there is a need to register a manual cleanup
-#[switch_state_handler]
-pub fn cleanup(s: &Session) -> switch_status_t {
-    unsafe {
-        // take back the box and let drop run
-        let _ = s.get_channel().map(|c| c.remove_private::<Private>());
-    }
-    switch_status_t::SWITCH_STATUS_SUCCESS
-}
-
-const STATE_HANDLERS: StateHandlerTable = StateHandlerTable {
-    on_destroy: Some(cleanup),
-    ..DEFAULT_STATE_HANDLER_TABLE
-};
