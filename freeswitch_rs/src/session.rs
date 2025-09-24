@@ -1,15 +1,13 @@
 use freeswitch_sys::*;
-use std::any::TypeId;
 use std::ffi::c_void;
+use std::ffi::CStr;
 use std::ffi::CString;
-use std::hash;
-use std::hash::Hash;
-use std::hash::Hasher;
 use std::io::Read;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
 
+use crate::fs_wrapper_type;
 use crate::utils::call_with_meta_suffix;
 use crate::Result;
 
@@ -128,49 +126,43 @@ impl Session {
 }
 // =====
 
+/// # Safety
+///
+/// Implementors should be aware that channels take no ownership of values
+/// and so it up to you to free if needed at suitable point in time.
+/// Additionally as Channels store void ptrs, its on calling code to cast correctly
+pub unsafe trait IntoChannelValue {
+    fn into_value(self) -> *const c_void;
+    fn from_ptr(ptr: *const c_void) -> Self;
+}
+
 #[repr(transparent)]
 pub struct Channel(pub *mut switch_channel_t);
 
+type ChannelStateHandlerIndex = usize;
+
 impl Channel {
-    // SAFETY:
-    // this is marked unsafe until we can avoid overwriting existing
-    // which could potentially leak overwritten
-    pub unsafe fn set_private<T>(&self, data: Box<T>) -> Result<&T>
-    where
-        T: Sized + 'static,
-    {
-        let mut h = hash::DefaultHasher::new();
-        TypeId::of::<T>().hash(&mut h);
-        let key = CString::new(h.finish().to_string()).unwrap();
-        let data_ptr = Box::into_raw(data);
+    pub fn set_private_with_key<T: IntoChannelValue>(&self, key: &CStr, data: T) -> Result<()> {
+        let data_ptr = data.into_value();
 
         // SAFETY:
         // FS will take a lock on channel insert / read so its safe to call
         // with shared reference
-        // We store the raw box ptr and reconstruct it as a shared refererence on READ...
-        // the theory being, BOX<T> should be compatible with T* and hence we provide that as a
-        // reference - which means box drop shouldn't happen
         unsafe {
-            match switch_channel_set_private(self.0, key.as_ptr(), data_ptr as *mut c_void) {
-                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(&*(data_ptr as *const T)),
+            match switch_channel_set_private(self.0, key.as_ptr(), data_ptr) {
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
                 other => Err(other.into()),
             }
         }
     }
 
-    pub fn get_private<T>(&self) -> Option<&T>
-    where
-        T: Sized + 'static,
-    {
-        let mut h = hash::DefaultHasher::new();
-        TypeId::of::<T>().hash(&mut h);
-        let key = CString::new(h.finish().to_string()).unwrap();
-
+    /// # Safety
+    ///
+    /// Callers must enure channel key was set to T previously
+    pub unsafe fn get_private_with_key<T: IntoChannelValue>(&self, key: &CStr) -> Option<&T> {
         // SAFETY:
-        // We can sure be sure of the cast because key == typeid
-        // Memory is owned by session so we assume channel existing proves
-        // mem pool is still there.
-        // FS locks on read so is safe to call with shared reference
+        // FS will take a lock on channel insert / read so its safe to call
+        // with shared reference
         unsafe {
             let ptr = switch_channel_get_private(self.0, key.as_ptr());
             if ptr.is_null() {
@@ -180,26 +172,16 @@ impl Channel {
         }
     }
 
-    pub unsafe fn remove_private<T: Sized + 'static>(&self) -> Option<Box<T>> {
-        let mut h = hash::DefaultHasher::new();
-        TypeId::of::<T>().hash(&mut h);
-        let key = CString::new(h.finish().to_string()).unwrap();
-
-        // SAFETY:
-        // Its only really safe to call this on session destroy
-        // as that should mean there are no outstanding shared references
+    pub fn remove_private_with_key<T: IntoChannelValue>(&self, key: &CStr) {
         unsafe {
-            let ptr = switch_channel_get_private(self.0, key.as_ptr());
-            if ptr.is_null() {
-                return None;
-            }
-            let data = Box::from_raw(ptr as *mut T);
             switch_channel_set_private(self.0, key.as_ptr(), ptr::null());
-            Some(data)
         }
     }
 
-    pub fn add_state_handler(&self, table: &'static StateHandlerTable) -> Result<HandlerIndex> {
+    pub fn add_state_handler(
+        &self,
+        table: &'static StateHandlerTable,
+    ) -> Result<ChannelStateHandlerIndex> {
         unsafe {
             match switch_channel_add_state_handler(self.0, table) {
                 n if n < 0 => Err(switch_status_t::SWITCH_STATUS_GENERR.into()),
@@ -208,17 +190,13 @@ impl Channel {
         }
     }
 }
-type HandlerIndex = usize;
 
 // =====
 
 pub type MediaBugFlags = freeswitch_sys::switch_media_bug_flag_enum_t;
 
-#[repr(transparent)]
-pub struct MediaBug(*mut switch_media_bug_t);
-
-#[repr(transparent)]
-pub struct MediaBugHandle(*mut switch_media_bug_t);
+fs_wrapper_type!(MediaBugHandle, *mut switch_media_bug_t, derive(Clone));
+fs_wrapper_type!(MediaBug, *mut switch_media_bug_t);
 
 impl MediaBug {
     unsafe extern "C" fn callback<F>(

@@ -46,5 +46,26 @@ macro_rules! call_with_meta_prefix {
      }}
 }
 
+macro_rules! fs_wrapper_type {
+    ($wrapper:ident, $inner:ty) => {
+        fs_wrapper_type!($wrapper, $inner, derive());
+    };
+    ($wrapper:ident, $inner:ty, derive($($derive:path),*)) => {
+        #[derive(Debug $(, $derive)*)]
+        #[repr(transparent)]
+        pub struct $wrapper(pub $inner);
+
+        unsafe impl IntoChannelValue for $wrapper {
+            fn into_value(self) -> *const c_void {
+                self.0 as *const c_void
+            }
+            fn from_ptr(ptr: *const c_void) -> Self {
+                Self(ptr as $inner)
+            }
+        }
+    };
+}
+
 pub(crate) use call_with_meta_prefix;
 pub(crate) use call_with_meta_suffix;
+pub(crate) use fs_wrapper_type;
