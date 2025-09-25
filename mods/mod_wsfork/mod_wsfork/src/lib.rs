@@ -1,5 +1,6 @@
 mod audio_fork;
 
+use fastwebsockets::handshake;
 use hyper_util::rt::TokioExecutor;
 use wsfork_events::Body;
 pub use wsfork_events::MOD_WSFORK_EVENT;
@@ -206,22 +207,25 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
         });
     };
 
-    RT.spawn(async move {
-        // Run Rx Task to completion, firing FS events for changes
-        let res = async {
-            let stream = TcpStream::connect(addr).await.map_err(|e| anyhow!(e))?;
-            let exeuctor = TokioExecutor::new();
-            rx.run(stream, exeuctor, response_handler.clone()).await?;
-            Ok::<(), anyhow::Error>(())
+    RT.get().unwrap().spawn(async move {
+        // TODO: Reconnection logic
+        let req = rx.req.clone();
+        let res = async move {
+            let stream = TcpStream::connect(addr).await?;
+            let executor = TokioExecutor::new();
+            let (ws, _) = handshake::client(&executor, req, stream).await?;
+            Ok::<_, anyhow::Error>(ws)
         }
         .await;
 
         match res {
-            Ok(()) => {}
             Err(e) => response_handler(wsfork_events::Body::Error {
                 desc: format!("{:#}", e),
             }),
-        }
+            Ok(ws) => {
+                let _ = rx.run(ws, response_handler.clone()).await;
+            }
+        };
         drop(owned);
     });
 

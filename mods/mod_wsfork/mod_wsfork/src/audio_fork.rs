@@ -87,33 +87,43 @@ pub fn new_wsfork(
     ))
 }
 
-pub struct WSForkSender {
-    tx: thingbuf::mpsc::Sender<DataBuffer, DataBufferFactory>,
-    cancel: Arc<Notify>,
-}
-
 pub struct WSForkReceiver {
     rx: thingbuf::mpsc::Receiver<DataBuffer, DataBufferFactory>,
-    req: WSRequest,
+    pub req: WSRequest,
     cancel: Arc<Notify>,
 }
 
 impl WSForkReceiver {
-    pub async fn run<S, E>(
+    pub async fn run<S>(
         self,
-        stream: S,
-        executor: E,
-        on_event: impl Fn(wsfork_events::Body),
-    ) -> Result<()>
+        ws: WebSocket<S>,
+        on_event: impl Fn(wsfork_events::Body) + Clone,
+    ) -> std::result::Result<(), WebSocketError>
     where
-        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        // IE something that can spawn tasks
-        E: hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
-        let (mut ws, _) = handshake::client(&executor, self.req, stream).await?;
+        let res = self.run_loop(ws, on_event.clone()).await;
+        match &res {
+            Ok(()) => {}
+            Err(e) => on_event(wsfork_events::Body::Error {
+                desc: format!("{:#}", e),
+            }),
+        }
+        res
+    }
+
+    async fn run_loop<S>(
+        self,
+        mut ws: WebSocket<S>,
+        on_event: impl Fn(wsfork_events::Body),
+    ) -> std::result::Result<(), WebSocketError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         ws.set_auto_close(true);
         ws.set_auto_pong(true);
         ws.set_writev(true);
+
         let mut ws = FragmentCollector::new(ws);
         on_event(wsfork_events::Body::Connected {});
 
