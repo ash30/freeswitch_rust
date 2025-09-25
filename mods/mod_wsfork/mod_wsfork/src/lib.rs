@@ -2,6 +2,8 @@ mod audio_fork;
 
 use fastwebsockets::handshake;
 use hyper_util::rt::TokioExecutor;
+use tokio::runtime;
+use tokio::runtime::Runtime;
 use wsfork_events::Body;
 pub use wsfork_events::MOD_WSFORK_EVENT;
 use wsfork_events::WSForkEvent;
@@ -15,10 +17,9 @@ use freeswitch_rs::switch_status_t;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::sync::Arc;
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::runtime::Runtime;
 
 use freeswitch_rs::log::{debug, error, info, warn};
 use freeswitch_rs::*;
@@ -28,8 +29,7 @@ use crate::audio_fork::new_wsfork;
 
 const BUG_FN_NAME: &CStr = c"MOD_WSFORK_BUG";
 
-static RT: LazyLock<Runtime> =
-    LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().build().unwrap());
+static RT: OnceLock<Runtime> = OnceLock::new();
 
 struct Foobar {
     pub tx: audio_fork::WSForkSender,
@@ -70,6 +70,17 @@ struct FSMod;
 impl LoadableModule for FSMod {
     fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
+        // TODO: make worker count configurable
+        //
+        let Result::Ok(runtime) = runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(5)
+            .build()
+        else {
+            return switch_status_t::SWITCH_STATUS_GENERR;
+        };
+        let _ = RT.set(runtime);
+
         module.add_api(api_main);
 
         if Event::reserve_subclass(MOD_WSFORK_EVENT).is_err() {
