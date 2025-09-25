@@ -2,7 +2,8 @@ use anyhow::Result;
 use fastwebsockets::FragmentCollector;
 use fastwebsockets::Frame;
 use fastwebsockets::OpCode;
-use fastwebsockets::handshake;
+use fastwebsockets::WebSocket;
+use fastwebsockets::WebSocketError;
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -133,14 +134,13 @@ impl WSForkReceiver {
 
             let cancel = self.cancel.notified();
             pin!(cancel);
-
             loop {
                 tokio::select! {
                     // FS should cancel via notify
                     // and the channel is only dropped if cleaning up an irregular case
                     // either way exit the loop and notify WS
                     _ = &mut cancel => {
-                        break 'outer None
+                        break 'outer Ok(None)
                     }
                     next_send = &mut fut => {
                         if let Some(frame) = next_send {
@@ -150,14 +150,14 @@ impl WSForkReceiver {
                             break
                         }
                         else {
-                            break 'outer None;
+                            break 'outer Err(());
                         }
                     }
                     next_recv = ws.read_frame() => {
                         let Frame { opcode, payload, .. } = next_recv?;
                         match opcode {
                             OpCode::Close => {
-                                break 'outer Some(payload)
+                                break 'outer Ok(Some(payload))
                             },
                             OpCode::Text => {
                                 let content = String::from_utf8(payload.to_owned())
@@ -175,12 +175,22 @@ impl WSForkReceiver {
         };
 
         let (code, reason) = match close {
-            None => {
-                let reason = "LOCAL CANCEL";
-                let _ = ws.write_frame(Frame::close(1000, reason.as_bytes())).await;
-                (None, Some(reason.to_string()))
+            Err(_) => {
+                // Sender dropped without cancel... shouldn't happen!
+                let _ = ws
+                    .write_frame(Frame::close(1001, CANCEL_REASON.as_bytes()))
+                    .await;
+                (Some(1001), Some(CANCEL_REASON.to_string()))
             }
-            Some(p) => match p.len() {
+            Ok(None) => {
+                // Sender was cancelled ie graceful shutdown
+                let _ = ws
+                    .write_frame(Frame::close(1000, CANCEL_REASON.as_bytes()))
+                    .await;
+                (Some(1000), Some(CANCEL_REASON.to_string()))
+            }
+            Ok(Some(p)) => match p.len() {
+                // remote closed
                 0 => (None, None),
                 1 => (Some(1002), None),
                 2 => (Some(u16::from_be_bytes([p[0], p[1]])), None),
@@ -196,6 +206,11 @@ impl WSForkReceiver {
     }
 }
 
+pub struct WSForkSender {
+    tx: thingbuf::mpsc::Sender<DataBuffer, DataBufferFactory>,
+    cancel: Arc<Notify>,
+}
+
 impl WSForkSender {
     pub fn send_frame(&self, mut src: impl Read) -> std::result::Result<(), WSForkerError> {
         let mut send_ref = self.tx.try_send_ref()?;
@@ -208,6 +223,127 @@ impl WSForkSender {
     }
 
     pub fn cancel(&self) {
-        self.cancel.notify_waiters();
+        self.cancel.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use url::Url;
+
+    #[derive(Clone)]
+    struct EventCollector {
+        events: Arc<Mutex<Vec<wsfork_events::Body>>>,
+    }
+
+    impl EventCollector {
+        fn new() -> Self {
+            Self {
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn collect(&self, event: wsfork_events::Body) {
+            self.events.lock().unwrap().push(event);
+        }
+
+        fn inspect_event(&self, index: usize) -> Option<wsfork_events::Body> {
+            self.events.lock().unwrap().get(index).cloned()
+        }
+
+        fn event_count(&self) -> usize {
+            self.events.lock().unwrap().len()
+        }
+    }
+
+    mod websocket_tests {
+        use super::*;
+        use fastwebsockets::WebSocket;
+        use tokio_test::io::Builder;
+
+        #[tokio::test]
+        async fn test_websocket_connected_then_cancel() {
+            let url = Url::parse("ws://localhost:8080/test").unwrap();
+            let (sender, receiver) =
+                new_wsfork(url, 1024, Duration::from_millis(100), |_req| {}).unwrap();
+
+            let mock_stream = Builder::new()
+                // expect a close frame + 1000
+                .write(b"\x88\x0E\x03\xE8LOCAL_CANCEL")
+                .wait(Duration::from_secs(5))
+                .build();
+
+            let mut mock_ws = WebSocket::after_handshake(mock_stream, fastwebsockets::Role::Client);
+            mock_ws.set_auto_apply_mask(false);
+
+            let event_collector = EventCollector::new();
+            let collector_clone = event_collector.clone();
+
+            let handle = tokio::spawn(async move {
+                receiver
+                    .run(mock_ws, move |event| collector_clone.collect(event))
+                    .await
+            });
+
+            sender.cancel();
+            let result = handle.await;
+
+            assert!(matches!(
+                event_collector.inspect_event(0),
+                Some(wsfork_events::Body::Connected {})
+            ));
+
+            assert!(matches!(
+                event_collector.inspect_event(1),
+                Some(wsfork_events::Body::Closed { code, .. }) if code == Some(1000)
+            ));
+
+            assert_eq!(event_collector.event_count(), 2);
+            assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_websocket_connected_then_io_error() {
+            let url = Url::parse("ws://localhost:8080/test").unwrap();
+            let (_sender, receiver) =
+                new_wsfork(url, 1024, Duration::from_millis(100), |_req| {}).unwrap();
+
+            let mock_stream = Builder::new()
+                .read_error(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "UnexpectedEof",
+                ))
+                .build();
+            let mock_ws = WebSocket::after_handshake(mock_stream, fastwebsockets::Role::Client);
+
+            let event_collector = EventCollector::new();
+            let collector_clone = event_collector.clone();
+
+            let result = receiver
+                .run(mock_ws, move |event| collector_clone.collect(event))
+                .await;
+
+            assert!(matches!(
+                event_collector.inspect_event(0),
+                Some(wsfork_events::Body::Connected {})
+            ));
+
+            assert!(matches!(
+                event_collector.inspect_event(1),
+                Some(wsfork_events::Body::Error { ref desc })
+                if desc.contains("UnexpectedEof")
+            ));
+
+            assert_eq!(event_collector.event_count(), 2);
+            assert!(result.is_err());
+            // TODO: assert errors type
+
+            // Sender is now closed, to help inform FS
+            let data: Vec<u8> = vec![];
+            assert!(_sender.send_frame(data.as_slice()).is_err());
+        }
     }
 }

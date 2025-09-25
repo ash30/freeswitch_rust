@@ -10,7 +10,7 @@ pub struct WSForkEvent {
     pub body: Body,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 #[serde(tag = "type")]
 pub enum Body {
     Connected {},
