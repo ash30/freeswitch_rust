@@ -24,3 +24,6 @@ schemars = "1.0.4"
 serde = "1.0.225"
 thingbuf = "0.1.6"
 url = "2.5.7"
+
+[dev-dependencies]
+tokio-test = "0.4"

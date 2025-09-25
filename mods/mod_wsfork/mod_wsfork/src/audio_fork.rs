@@ -14,15 +14,14 @@ use url::Url;
 
 use std::io::Error;
 use std::io::Read;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
 use tokio::pin;
 
+const PACKETIZATION_PERIOD: u32 = 20; // ms 
+const CANCEL_REASON: &str = "LOCAL_CANCEL";
 pub type WSRequest = Request<Empty<Bytes>>;
 
 fn create_request(url: Url) -> Result<WSRequest> {
@@ -65,17 +64,14 @@ impl From<TrySendError> for WSForkerError {
     }
 }
 
-const PACKETIZATION_PERIOD: u32 = 20; // ms 
-
 pub fn new_wsfork(
     url: url::Url,
     frame_size: usize,
     buf_duration: Duration, // TODO: change to time format
     headers: impl FnOnce(&mut WSRequest),
 ) -> Result<(WSForkSender, WSForkReceiver)> {
-    let buffer_frame_size = buf_duration.as_millis().max(100).min(20) as u32 / PACKETIZATION_PERIOD;
-    let (tx, rx) =
-        thingbuf::mpsc::with_recycle(buffer_frame_size as usize, DataBufferFactory(frame_size));
+    let capacity = buf_duration.as_millis().clamp(20, 100) as u32 / PACKETIZATION_PERIOD;
+    let (tx, rx) = thingbuf::mpsc::with_recycle(capacity as usize, DataBufferFactory(frame_size));
 
     let mut req = create_request(url)?;
     (headers(&mut req));
