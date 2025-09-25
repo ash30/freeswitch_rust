@@ -156,7 +156,7 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
     let bug = session.add_media_bug(
         Some(BUG_FN_NAME.into()),
         None,
-        MediaBugFlags::SMBF_ONE_ONLY,
+        MediaBugFlags::SMBF_BOTH,
         move |bug, abc_type| {
             // For error handling, if we return false from closure
             // FS will prune mal functioning bug ( ie remove it )
