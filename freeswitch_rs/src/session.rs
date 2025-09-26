@@ -230,28 +230,32 @@ impl MediaBug {
             &*(ptr as *mut Session)
         }
     }
+
+    pub fn read_frame(&mut self, frame: &mut Frame) -> Result<usize> {
+        let res = unsafe { switch_core_media_bug_read(self.0, &mut frame.0, false.into()) };
+        if res != switch_status_t::SWITCH_STATUS_SUCCESS {
+            Err(res.into())
+        } else {
+            Ok(frame.0.datalen as usize)
+        }
+    }
 }
 
-impl Read for MediaBug {
-    // Read may potentially return Zero and its ok to read again ( waiting on packets etc )
-    //
-    // The FS api doesn't offer much inspection of the error when calling
-    // switch_core_media_bug_read - so how to understand IF its error or just not ready to read?
-    // seems like a generic error value based on switch_status_t is the best we can do ?
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut f = unsafe { mem::MaybeUninit::<switch_frame_t>::zeroed().assume_init() };
-        f.data = buf.as_mut_ptr() as *mut c_void;
-        f.buflen = buf.len().try_into().unwrap();
+pub struct Frame<'a>(switch_frame_t, &'a mut [u8]);
 
-        // SAFETY:
-        // Implementation needs to ensure that fs is given correct buf len
-        // technically its callers responsiblity to initialise the buffer, so we don't fill for now
-        let res = unsafe { switch_core_media_bug_read(self.0, &mut f, switch_bool_t_SWITCH_FALSE) };
-        if res != switch_status_t::SWITCH_STATUS_SUCCESS {
-            Err(std::io::Error::other(format!("switch status: {:?}", res)))
-        } else {
-            Ok(f.datalen.try_into().unwrap())
-        }
+impl<'a> Frame<'a> {
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        let mut f = unsafe { mem::MaybeUninit::<switch_frame_t>::zeroed().assume_init() };
+        buf.fill(0);
+        f.buflen = buf.len().min(u32::MAX as usize) as u32;
+        f.data = buf.as_mut_ptr() as *mut c_void;
+        Self(f, buf)
+    }
+}
+
+impl<'a> Frame<'a> {
+    pub fn data(&'a self) -> &'a [u8] {
+        self.1
     }
 }
 
