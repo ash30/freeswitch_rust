@@ -1,6 +1,6 @@
 use freeswitch_sys::{switch_log_level_t, switch_log_printf, switch_text_channel_t};
 use log::{kv::Value, Log};
-use std::{ffi::CString, ptr::null};
+use std::{ffi::CString, path::Path, ptr::null};
 
 #[repr(transparent)]
 pub struct FSTextChannel(switch_text_channel_t);
@@ -28,20 +28,17 @@ pub struct FSLogger;
 pub static FS_LOG: FSLogger = FSLogger {};
 
 impl Log for FSLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
         true
     }
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            // lets prefix the file name so we can find things in fs_cli
-            let prefixed_file_name = format!(
-                "{}:{}",
-                env!("CARGO_PKG_NAME"),
-                record.file().unwrap_or("unknown")
-            );
-            let file = CString::new(prefixed_file_name).unwrap();
+            let file = record
+                .file()
+                .and_then(|s| CString::new(s).ok())
+                .map(|s| s.into_raw());
             let line = record.line().unwrap_or(0);
-            let func = CString::new("").unwrap();
+            let func = std::ptr::null();
             let level = match record.metadata().level() {
                 log::Level::Warn => switch_log_level_t::SWITCH_LOG_WARNING,
                 log::Level::Info => switch_log_level_t::SWITCH_LOG_INFO,
@@ -54,14 +51,14 @@ impl Log for FSLogger {
                 .get("channel".into())
                 .and_then(|a| a.to_u64())
                 .unwrap_or(0);
-            let fmt = format!("{}", record.args());
+            let fmt = format!("{}\n", record.args());
             let fmt_c = CString::new(fmt).unwrap();
 
             unsafe {
                 switch_log_printf(
                     switch_text_channel_t(channel as u32),
-                    file.into_raw(),
-                    func.into_raw(),
+                    file.unwrap_or(std::ptr::null_mut()),
+                    func,
                     line.try_into().unwrap_or(0),
                     null(),
                     level,
