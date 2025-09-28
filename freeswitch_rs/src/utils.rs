@@ -29,20 +29,21 @@ pub type Result<T> = std::result::Result<T, FSError>;
 // ---------
 macro_rules! call_with_meta_suffix {
      ($func:ident, $($arg:expr),*) => {{
-        let file = CString::new(std::file!()).unwrap();
-        let line = std::line!().try_into().unwrap_or(0);
-        // TODO: fixme
-        let func = CString::new("").unwrap();
-        $func($($arg),*, file.as_ptr(), func.as_ptr(), line)
+        let loc = std::panic::Location::caller();
+        let file = CString::new(loc.file()).unwrap();
+        let line = loc.line() as i32;
+        let func = std::ptr::null();
+        $func($($arg),*, file.as_ptr(), func, line)
      }}
 }
 
 macro_rules! call_with_meta_prefix {
      ($func:ident, $($arg:expr),*) => {{
-        let file = CString::new(std::file!()).unwrap();
-        let line = std::line!().try_into().unwrap_or(0);
-        let func = CString::new("").unwrap();
-        $func(file.as_ptr(), func.as_ptr(), line,$($arg),*)
+        let loc = std::panic::Location::caller();
+        let file = CString::new(loc.file()).unwrap();
+        let line = loc.line() as i32;
+        let func = std::ptr::null();
+        $func(file.as_ptr(), func, line,$($arg),*)
      }}
 }
 

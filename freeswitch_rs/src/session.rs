@@ -2,7 +2,6 @@ use freeswitch_sys::*;
 use std::ffi::c_void;
 use std::ffi::CStr;
 use std::ffi::CString;
-use std::io::Read;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
@@ -40,6 +39,7 @@ impl Deref for LocateGuard {
 pub struct Session(pub *mut switch_core_session_t);
 
 impl Session {
+    #[track_caller]
     pub fn locate(id: &str) -> Option<LocateGuard> {
         let s: CString = CString::new(id.to_owned()).unwrap();
 
@@ -55,9 +55,7 @@ impl Session {
             }
         }
     }
-}
 
-impl Session {
     pub fn get_channel(&self) -> Option<&Channel> {
         unsafe {
             let c = switch_core_session_get_channel(self.0);

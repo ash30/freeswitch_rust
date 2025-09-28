@@ -36,6 +36,7 @@ impl Event {
         Event::new_core_event(switch_event_types_t::SWITCH_EVENT_CUSTOM, Some(subclass))
     }
 
+    #[track_caller]
     pub fn new_core_event(event: switch_event_types_t, subclass: Option<&CStr>) -> Result<Self> {
         let mut e: MaybeUninit<*mut switch_event_t> = MaybeUninit::zeroed();
 
@@ -88,6 +89,7 @@ impl Event {
         }
     }
 
+    #[track_caller]
     pub fn fire(mut self) -> Result<()> {
         // SAFETY:
         // switch_event_fire_detailed cleans up memory
