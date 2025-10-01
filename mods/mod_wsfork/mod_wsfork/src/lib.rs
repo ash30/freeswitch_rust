@@ -211,7 +211,7 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
             if let Some(session) = Session::locate(&session_id)
                 && let Some(channel) = session.get_channel()
             {
-                fs_event.set_channel_data(channel);
+                fs_event.set_channel_data(&channel);
             }
             let _ = fs_event.set_body(serde_json::to_string(&data).unwrap_or_default());
             fs_event.fire()

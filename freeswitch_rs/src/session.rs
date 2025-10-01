@@ -6,8 +6,10 @@ use std::mem;
 use std::ops::Deref;
 use std::ptr;
 
-use crate::fs_wrapper_type;
+use crate::fs_new_type;
+use crate::fs_session_owned_type;
 use crate::utils::call_with_meta_suffix;
+use crate::utils::FSNewType;
 use crate::Result;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,34 +17,31 @@ pub struct SessionUUID(String);
 
 // ------------
 
-pub struct LocateGuard(*mut switch_core_session_t);
+pub struct LocateGuard(Session);
 
 impl Drop for LocateGuard {
     fn drop(&mut self) {
         // SAFETY: In theory this is safe because ptr is valid since we located Session
         // to create Session struct
-        if !self.0.is_null() {
-            unsafe { switch_core_session_rwunlock(self.0) }
-        }
+        unsafe { switch_core_session_rwunlock(self.0.as_ptr()) }
     }
 }
 
 impl Deref for LocateGuard {
     type Target = Session;
     fn deref(&self) -> &Self::Target {
-        unsafe { &*(self.0 as *const Session) }
+        &self.0
     }
 }
 
 // ------------
-#[repr(transparent)]
-pub struct Session(pub *mut switch_core_session_t);
+//
+fs_new_type!(Session, *mut switch_core_session_t);
 
 impl Session {
     #[track_caller]
     pub fn locate(id: &str) -> Option<LocateGuard> {
         let s: CString = CString::new(id.to_owned()).unwrap();
-
         // SAFETY
         // Locating will take a read lock of any found session
         // so the reference to session can live as long as you own the guard
@@ -51,18 +50,18 @@ impl Session {
             if ptr.is_null() {
                 None
             } else {
-                Some(LocateGuard(ptr))
+                Some(LocateGuard(Session::from_ptr(ptr)))
             }
         }
     }
 
-    pub fn get_channel(&self) -> Option<&Channel> {
+    pub fn get_channel(&self) -> Option<Channel<'_>> {
         unsafe {
-            let c = switch_core_session_get_channel(self.0);
-            if c.is_null() {
+            let ptr = switch_core_session_get_channel(self.as_ptr());
+            if ptr.is_null() {
                 return None;
             };
-            Some(&*(c as *const Channel))
+            Some(Channel::from_ptr(ptr))
         }
     }
 
@@ -97,10 +96,10 @@ impl Session {
         // SAFETY:
         unsafe {
             let res = switch_core_media_bug_add(
-                self.0,
+                self.as_ptr(),
                 function.map(|f| f.as_ptr()).unwrap_or(ptr::null()),
                 target.map(|t| t.as_ptr()).unwrap_or(ptr::null()),
-                Some(MediaBug::callback::<F>),
+                Some(bug_extern_callback::<F>),
                 data as *mut c_void,
                 0,
                 flags.0,
@@ -128,15 +127,27 @@ impl Session {
 /// Additionally as Channels store void ptrs, its on calling code to cast correctly
 pub unsafe trait IntoChannelValue {
     fn into_value(self) -> *const c_void;
-    fn from_ptr(ptr: *const c_void) -> Self;
+    fn from_value(ptr: *const c_void) -> Self;
 }
 
-#[repr(transparent)]
-pub struct Channel(pub *mut switch_channel_t);
+// Blanket impl for all FS wrapper types so they store their wrapped pointer in a channel
+unsafe impl<T, U> IntoChannelValue for T
+where
+    T: FSNewType<Inner = *mut U>,
+{
+    fn from_value(ptr: *const c_void) -> T {
+        Self::from_ptr(ptr as *mut U)
+    }
+    fn into_value(self) -> *const c_void {
+        self.as_ptr() as *const c_void
+    }
+}
 
+// Channel type lifetime is tied to session
+fs_session_owned_type!(Channel, *mut switch_channel_t);
 type ChannelStateHandlerIndex = usize;
 
-impl Channel {
+impl<'a> Channel<'a> {
     pub fn set_private_with_key<T: IntoChannelValue>(&self, key: &CStr, data: T) -> Result<()> {
         let data_ptr = data.into_value();
 
@@ -144,7 +155,7 @@ impl Channel {
         // FS will take a lock on channel insert / read so its safe to call
         // with shared reference
         unsafe {
-            match switch_channel_set_private(self.0, key.as_ptr(), data_ptr) {
+            match switch_channel_set_private(self.as_ptr(), key.as_ptr(), data_ptr) {
                 switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
                 other => Err(other.into()),
             }
@@ -159,7 +170,7 @@ impl Channel {
         // FS will take a lock on channel insert / read so its safe to call
         // with shared reference
         unsafe {
-            let ptr = switch_channel_get_private(self.0, key.as_ptr());
+            let ptr = switch_channel_get_private(self.as_ptr(), key.as_ptr());
             if ptr.is_null() {
                 return None;
             }
@@ -169,7 +180,7 @@ impl Channel {
 
     pub fn remove_private_with_key<T: IntoChannelValue>(&self, key: &CStr) {
         unsafe {
-            switch_channel_set_private(self.0, key.as_ptr(), ptr::null());
+            switch_channel_set_private(self.as_ptr(), key.as_ptr(), ptr::null());
         }
     }
 
@@ -178,7 +189,7 @@ impl Channel {
         table: &'static StateHandlerTable,
     ) -> Result<ChannelStateHandlerIndex> {
         unsafe {
-            match switch_channel_add_state_handler(self.0, table) {
+            match switch_channel_add_state_handler(self.as_ptr(), table) {
                 n if n < 0 => Err(switch_status_t::SWITCH_STATUS_GENERR.into()),
                 n => Ok(n.try_into().unwrap()),
             }
@@ -190,35 +201,35 @@ impl Channel {
 
 pub type MediaBugFlags = freeswitch_sys::switch_media_bug_flag_enum_t;
 
-fs_wrapper_type!(MediaBugHandle, *mut switch_media_bug_t, derive(Clone));
-fs_wrapper_type!(MediaBug, *mut switch_media_bug_t);
+fs_new_type!(MediaBugHandle, *mut switch_media_bug_t, derive(Clone));
+fs_session_owned_type!(MediaBug, *mut switch_media_bug_t);
 
-impl MediaBug {
-    unsafe extern "C" fn callback<F>(
-        arg1: *mut switch_media_bug_t,
-        arg2: *mut ::std::os::raw::c_void,
-        arg3: switch_abc_type_t,
-    ) -> switch_bool_t
-    where
-        F: FnMut(&mut MediaBug, switch_abc_type_t) -> bool,
-    {
-        let callback_ptr = arg2 as *mut F;
-        let callback = &mut *callback_ptr;
-        let bug = &mut *(arg1 as *mut MediaBug);
+unsafe extern "C" fn bug_extern_callback<F>(
+    arg1: *mut switch_media_bug_t,
+    arg2: *mut ::std::os::raw::c_void,
+    arg3: switch_abc_type_t,
+) -> switch_bool_t
+where
+    F: FnMut(&mut MediaBug, switch_abc_type_t) -> bool,
+{
+    let callback_ptr = arg2 as *mut F;
+    let callback = &mut *callback_ptr;
+    let mut bug = MediaBug::from_ptr(arg1);
 
-        let res = if callback(bug, arg3) {
-            switch_bool_t_SWITCH_TRUE
-        } else {
-            switch_bool_t_SWITCH_FALSE
-        };
+    let res = if callback(&mut bug, arg3) {
+        switch_bool_t_SWITCH_TRUE
+    } else {
+        switch_bool_t_SWITCH_FALSE
+    };
 
-        // take back ownership of box so we can clean up
-        if arg3 == switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE {
-            let _ = Box::from_raw(arg2);
-        }
-        res
+    // take back ownership of box so we can clean up
+    if arg3 == switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE {
+        let _ = Box::from_raw(arg2);
     }
+    res
+}
 
+impl<'a> MediaBug<'a> {
     pub fn get_session(&self) -> &Session {
         // SAFETY
         // Media bug lifetime is tied to session, so should be safe
@@ -230,7 +241,7 @@ impl MediaBug {
     }
 
     pub fn read_frame(&mut self, frame: &mut Frame) -> Result<usize> {
-        let res = unsafe { switch_core_media_bug_read(self.0, &mut frame.0, false.into()) };
+        let res = unsafe { switch_core_media_bug_read(self.0, &mut frame.0, true.into()) };
         if res != switch_status_t::SWITCH_STATUS_SUCCESS {
             Err(res.into())
         } else {
@@ -244,7 +255,6 @@ pub struct Frame<'a>(switch_frame_t, &'a mut [u8]);
 impl<'a> Frame<'a> {
     pub fn new(buf: &'a mut [u8]) -> Self {
         let mut f = unsafe { mem::MaybeUninit::<switch_frame_t>::zeroed().assume_init() };
-        buf.fill(0);
         f.buflen = buf.len().min(u32::MAX as usize) as u32;
         f.data = buf.as_mut_ptr() as *mut c_void;
         Self(f, buf)

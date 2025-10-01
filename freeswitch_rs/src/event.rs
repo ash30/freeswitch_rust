@@ -1,3 +1,4 @@
+use crate::utils::FSNewType;
 use freeswitch_sys::*;
 use std::{
     ffi::{CStr, CString},
@@ -70,7 +71,7 @@ impl Event {
         // set_data methods will take profile lock for us so its safe to
         // call with shared reference
         unsafe {
-            switch_channel_event_set_data(channel.0, self.0);
+            switch_channel_event_set_data(channel.as_ptr(), self.0);
         }
     }
 

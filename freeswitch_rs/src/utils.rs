@@ -1,6 +1,13 @@
 use freeswitch_sys::switch_status_t;
 use std::{error::Error, fmt::Display};
 
+pub(crate) trait FSHandle<T: FSNewType> {}
+pub(crate) trait FSNewType {
+    type Inner;
+    fn from_ptr(ptr: Self::Inner) -> Self;
+    fn as_ptr(&self) -> Self::Inner;
+}
+
 // Errors
 #[derive(Debug)]
 pub struct FSError(switch_status_t);
@@ -47,21 +54,43 @@ macro_rules! call_with_meta_prefix {
      }}
 }
 
-macro_rules! fs_wrapper_type {
+macro_rules! fs_new_type{
     ($wrapper:ident, $inner:ty) => {
-        fs_wrapper_type!($wrapper, $inner, derive());
+        fs_new_type!($wrapper, $inner, derive());
     };
     ($wrapper:ident, $inner:ty, derive($($derive:path),*)) => {
-        #[derive(Debug $(, $derive)*)]
-        #[repr(transparent)]
-        pub struct $wrapper(pub $inner);
 
-        unsafe impl IntoChannelValue for $wrapper {
-            fn into_value(self) -> *const c_void {
-                self.0 as *const c_void
+        #[derive(Debug $(, $derive)*)]
+        pub struct $wrapper($inner);
+
+        impl crate::utils::FSNewType for $wrapper {
+            type Inner = $inner;
+            fn from_ptr(ptr:$inner) -> Self {
+                Self(ptr)
             }
-            fn from_ptr(ptr: *const c_void) -> Self {
-                Self(ptr as $inner)
+            fn as_ptr(&self) -> $inner {
+                self.0
+            }
+        }
+    };
+}
+
+macro_rules! fs_session_owned_type {
+    ($wrapper:ident, $inner:ty) => {
+        fs_session_owned_type!($wrapper, $inner, derive());
+    };
+    ($wrapper:ident, $inner:ty, derive($($derive:path),*)) => {
+
+        #[derive(Debug $(, $derive)*)]
+        pub struct $wrapper<'a>($inner, std::marker::PhantomData<&'a Session>);
+
+        impl<'a> crate::utils::FSNewType for $wrapper<'a> {
+            type Inner = $inner;
+            fn from_ptr(ptr:$inner) -> Self {
+                Self(ptr, std::marker::PhantomData)
+            }
+            fn as_ptr(&self) -> $inner {
+                self.0
             }
         }
     };
@@ -69,4 +98,5 @@ macro_rules! fs_wrapper_type {
 
 pub(crate) use call_with_meta_prefix;
 pub(crate) use call_with_meta_suffix;
-pub(crate) use fs_wrapper_type;
+pub(crate) use fs_new_type;
+pub(crate) use fs_session_owned_type;
