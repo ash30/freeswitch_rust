@@ -46,6 +46,11 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
                 let module = freeswitch_rs::FSModuleInterface(module_interface);
                 #struct_name::load(module,pool)
             }
+
+            unsafe extern "C" fn shutdown_wrapper() -> freeswitch_rs::switch_status_t
+            {
+                #struct_name::shutdown()
+            }
         }
 
         // Module Table
@@ -54,7 +59,7 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
         pub static mut #mod_interface_ident: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
             switch_api_version: 5,
             load: Some(#struct_name::load_wrapper),
-            shutdown: None,
+            shutdown: Some(#struct_name::shutdown_wrapper),
             runtime: None,
             flags: 0,
         };
