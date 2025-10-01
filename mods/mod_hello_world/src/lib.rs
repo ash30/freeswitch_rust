@@ -8,13 +8,13 @@ struct FSModule;
 impl LoadableModule for FSModule {
     fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
         info!(channel = SWITCH_CHANNEL_ID_LOG; "mod hello_world loading");
-        module.add_api(api_main);
+        module.add_api(hello_world);
         switch_status_t::SWITCH_STATUS_SUCCESS
     }
 }
-
-#[switch_api_define("hello_world")]
-fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
+// api will use function name if no 'name' attribute provided to proc macro
+#[switch_api_define]
+fn hello_world(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
     debug!(channel = SWITCH_CHANNEL_ID_SESSION; "mod hello_world cmd {}", &cmd);
     let _ = writeln!(stream, "+OK Success");
     switch_status_t::SWITCH_STATUS_SUCCESS

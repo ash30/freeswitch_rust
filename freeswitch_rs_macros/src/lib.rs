@@ -1,7 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
+use syn::meta::ParseNestedMeta;
 use syn::parse::Parser;
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use syn::{parse_macro_input, LitStr};
 
 #[proc_macro_attribute]
 pub fn switch_module_define(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -62,19 +63,43 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
     TokenStream::from(output)
 }
 
-#[proc_macro_attribute]
-pub fn switch_api_define(attr: TokenStream, item: TokenStream) -> TokenStream {
-    //let args = syn::parse_macro_input!(attr as syn::Attribute);
-    let ast = syn::parse_macro_input!(item as syn::ItemFn);
-    impl_switch_api_define(&ast)
+#[derive(Default)]
+struct ApiAttributes {
+    name: Option<LitStr>,
+    desc: Option<LitStr>,
 }
 
-fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
+impl ApiAttributes {
+    fn parse(&mut self, meta: ParseNestedMeta) -> syn::parse::Result<()> {
+        if meta.path.is_ident("name") {
+            self.name = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("desc") {
+            self.desc = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported property"))
+        }
+    }
+}
+
+#[proc_macro_attribute]
+pub fn switch_api_define(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let ast = syn::parse_macro_input!(item as syn::ItemFn);
+    let mut attrs = ApiAttributes::default();
+    let parser = syn::meta::parser(|meta| attrs.parse(meta));
+    parse_macro_input!(attr with parser);
+    impl_switch_api_define(&ast, attrs)
+}
+
+fn impl_switch_api_define(ast: &syn::ItemFn, attrs: ApiAttributes) -> TokenStream {
     let syn::ItemFn { sig, block, .. } = ast;
 
     let name = &sig.ident;
-    let output = quote! {
+    let fs_name = attrs.name.map(|ls| ls.value()).unwrap_or(name.to_string());
+    let fs_desc = attrs.desc.map(|ls| ls.value()).unwrap_or("".to_string());
 
+    let output = quote! {
         #[allow(non_camel_case_types)]
         struct #name;
         impl #name {
@@ -82,8 +107,8 @@ fn impl_switch_api_define(ast: &syn::ItemFn) -> TokenStream {
         }
 
         impl freeswitch_rs::ApiInterface for #name {
-            const NAME:&'static str = "test";
-            const DESC:&'static str = "test";
+            const NAME:&'static str = #fs_name;
+            const DESC:&'static str = #fs_desc;
             fn api_fn(cmd:&str, session:Option<&freeswitch_rs::Session>, stream:freeswitch_rs::StreamHandle) -> freeswitch_rs::switch_status_t {
                 #name::#name(cmd,session,stream)
             }

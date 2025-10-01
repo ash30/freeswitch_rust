@@ -98,7 +98,7 @@ impl LoadableModule for FSMod {
     }
 }
 
-#[switch_api_define("ws_fork")]
+#[switch_api_define(name = "wsfork", desc = "fork audio frames over websocket")]
 fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
     debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
     match parse_args(cmd) {
