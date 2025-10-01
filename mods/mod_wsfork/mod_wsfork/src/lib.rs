@@ -31,10 +31,6 @@ const BUG_FN_NAME: &CStr = c"MOD_WSFORK_BUG";
 
 static RT: OnceLock<Runtime> = OnceLock::new();
 
-struct Foobar {
-    pub tx: audio_fork::WSForkSender,
-}
-
 #[derive(Parser, Debug)]
 enum Subcommands {
     Start {
@@ -150,7 +146,7 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
     let buf_duration = Duration::from_millis(20);
 
     let (tx, rx) = new_wsfork(url.clone(), frame_size, buf_duration, |_| {})?;
-    let owned = Arc::new(Foobar { tx });
+    let owned = Arc::new(tx);
     let weak_ref = Arc::downgrade(&owned);
 
     let bug = session.add_media_bug(
@@ -165,10 +161,10 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
             };
             match abc_type {
                 switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
-                    handle.tx.cancel();
+                    handle.cancel();
                 }
                 switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                    match handle.tx.send_frame(bug) {
+                    match handle.get_next_free_buffer() {
                         Err(WSForkerError::Full) => {
                             warn!(channel=SWITCH_CHANNEL_ID_LOG; "Buffer full + Packets dropped")
                         }
@@ -177,12 +173,15 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
                             debug!(channel=SWITCH_CHANNEL_ID_LOG; "WS Closed, Pruning bug");
                             return false;
                         }
-                        Err(WSForkerError::ReadError(e)) => {
-                            error!(channel=SWITCH_CHANNEL_ID_LOG; "Bug Read Error {e}");
-                            return false;
+                        Ok(mut b) => {
+                            let mut f = Frame::new(&mut b);
+                            info!(channel=SWITCH_CHANNEL_ID_LOG; "data_size {}", f.data().len());
+                            if let Err(e) = bug.read_frame(&mut f) {
+                                error!(channel=SWITCH_CHANNEL_ID_LOG; "Error Reading Frame {e}");
+                                return false;
+                            }
                         }
-                        _ => {}
-                    }
+                    };
                 }
                 _ => {}
             };

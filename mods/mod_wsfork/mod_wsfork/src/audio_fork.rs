@@ -1,25 +1,20 @@
 use anyhow::Result;
-use fastwebsockets::FragmentCollector;
-use fastwebsockets::Frame;
-use fastwebsockets::OpCode;
-use fastwebsockets::WebSocket;
-use fastwebsockets::WebSocketError;
+use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocket, WebSocketError};
+use freeswitch_rs::log::debug;
 use http_body_util::Empty;
 use hyper::{
     Request,
     body::Bytes,
     header::{CONNECTION, UPGRADE},
 };
-use tokio::sync::Notify;
-use url::Url;
-
-use std::io::Error;
-use std::io::Read;
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
 use tokio::pin;
+use tokio::sync::Notify;
+use url::Url;
 
 const PACKETIZATION_PERIOD: u32 = 20; // ms 
 const CANCEL_REASON: &str = "LOCAL_CANCEL";
@@ -44,17 +39,16 @@ struct DataBufferFactory(usize);
 
 impl Recycle<DataBuffer> for DataBufferFactory {
     fn recycle(&self, element: &mut DataBuffer) {
-        todo!()
+        element.fill(0);
     }
     fn new_element(&self) -> DataBuffer {
-        Vec::with_capacity(self.0)
+        vec![0; self.0]
     }
 }
 
 pub enum WSForkerError {
     Full,
     Closed,
-    ReadError(Error),
 }
 impl From<TrySendError> for WSForkerError {
     fn from(value: TrySendError) -> Self {
@@ -68,7 +62,7 @@ impl From<TrySendError> for WSForkerError {
 pub fn new_wsfork(
     url: url::Url,
     frame_size: usize,
-    buf_duration: Duration, // TODO: change to time format
+    buf_duration: Duration,
     headers: impl FnOnce(&mut WSRequest),
 ) -> Result<(WSForkSender, WSForkReceiver)> {
     let capacity = buf_duration.as_millis().clamp(20, 100) as u32 / PACKETIZATION_PERIOD;
@@ -212,14 +206,10 @@ pub struct WSForkSender {
 }
 
 impl WSForkSender {
-    pub fn send_frame(&self, mut src: impl Read) -> std::result::Result<(), WSForkerError> {
-        let mut send_ref = self.tx.try_send_ref()?;
-
-        // TODO: Fix buf read
-        src.read(&mut send_ref).map_err(WSForkerError::ReadError)?;
-
-        // on drop, we notify receiver
-        Ok(())
+    pub fn get_next_free_buffer(
+        &self,
+    ) -> std::result::Result<impl DerefMut<Target = DataBuffer>, WSForkerError> {
+        self.tx.try_send_ref().map_err(|e| e.into())
     }
 
     pub fn cancel(&self) {
@@ -303,12 +293,14 @@ mod tests {
 
             assert_eq!(event_collector.event_count(), 2);
             assert!(result.is_ok());
+
+            assert!(sender.get_next_free_buffer().is_err());
         }
 
         #[tokio::test]
         async fn test_websocket_connected_then_io_error() {
             let url = Url::parse("ws://localhost:8080/test").unwrap();
-            let (_sender, receiver) =
+            let (sender, receiver) =
                 new_wsfork(url, 1024, Duration::from_millis(100), |_req| {}).unwrap();
 
             let mock_stream = Builder::new()
@@ -342,8 +334,7 @@ mod tests {
             // TODO: assert errors type
 
             // Sender is now closed, to help inform FS
-            let data: Vec<u8> = vec![];
-            assert!(_sender.send_frame(data.as_slice()).is_err());
+            assert!(sender.get_next_free_buffer().is_err());
         }
     }
 }
