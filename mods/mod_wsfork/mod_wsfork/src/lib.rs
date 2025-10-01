@@ -150,9 +150,9 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
     let weak_ref = Arc::downgrade(&owned);
 
     let bug = session.add_media_bug(
-        Some(BUG_FN_NAME.into()),
         None,
-        MediaBugFlags::SMBF_BOTH,
+        None,
+        MediaBugFlags::SMBF_READ_STREAM,
         move |bug, abc_type| {
             // For error handling, if we return false from closure
             // FS will prune mal functioning bug ( ie remove it )
