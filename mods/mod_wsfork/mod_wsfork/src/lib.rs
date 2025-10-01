@@ -54,24 +54,24 @@ enum Subcommands {
 }
 
 fn parse_args(cmd_str: &str) -> Result<Subcommands> {
-    let mut cmd = Command::new("argparse")
+    let mut cmd = Command::new("wsfork")
         .disable_version_flag(true)
         .disable_help_flag(true)
+        .ignore_errors(true)
         .no_binary_name(true);
     cmd = Subcommands::augment_subcommands(cmd);
-    let matches = cmd.get_matches_from(cmd_str.split(' '));
+    let matches = cmd.try_get_matches_from(cmd_str.split(' '))?;
     let s = Subcommands::from_arg_matches(&matches)?;
     Ok(s)
 }
 
-#[switch_module_define(mod_audiofork)]
+#[switch_module_define(mod_wsfork)]
 struct FSMod;
 
 impl LoadableModule for FSMod {
     fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
         // TODO: make worker count configurable
-        //
         let Result::Ok(runtime) = runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(5)
@@ -100,10 +100,10 @@ impl LoadableModule for FSMod {
 
 #[switch_api_define(name = "wsfork", desc = "fork audio frames over websocket")]
 fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
-    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork cmd {}", &cmd);
+    info!(channel=SWITCH_CHANNEL_ID_LOG; "mod wsfork cmd {}", &cmd);
     match parse_args(cmd) {
-        Err(_) => {
-            let _ = write!(stream, "ERR: mod audiofork invalid usage");
+        Err(e) => {
+            let _ = write!(stream, "-ERR, mod wsfork invalid usage\n{}", e);
         }
         Ok(cmd) => {
             let res = match cmd {
@@ -115,7 +115,7 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
                 Subcommands::Stop { session, bug_name } => api_stop(session, bug_name),
             };
             if let Err(e) = res {
-                error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork error: {}", &e);
+                error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork error: {}", &e);
             }
         }
     }
@@ -138,7 +138,7 @@ fn api_stop(session_id: String, bug_name: String) -> Result<()> {
 }
 
 fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
-    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod audiofork start uuid:{}",session_id);
+    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork start uuid:{}",session_id);
     let session =
         Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
 
