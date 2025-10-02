@@ -16,6 +16,7 @@ use freeswitch_rs::Session;
 use freeswitch_rs::switch_status_t;
 use std::ffi::CStr;
 use std::ffi::CString;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -27,9 +28,9 @@ use freeswitch_rs::*;
 use crate::audio_fork::WSForkerError;
 use crate::audio_fork::new_wsfork;
 
-const BUG_FN_NAME: &CStr = c"MOD_WSFORK_BUG";
-
 static RT: OnceLock<Runtime> = OnceLock::new();
+
+const DEFAULT_BUG_KEY: &CStr = c"MOD_WSFORK_BUG_KEY";
 
 #[derive(Parser, Debug)]
 enum Subcommands {
@@ -38,14 +39,12 @@ enum Subcommands {
         session: String,
         #[arg()]
         url: String,
-        #[arg(default_value_t)]
-        bug_name: String,
+        bug_name: Option<String>,
     },
     Stop {
         #[arg()]
         session: String,
-        #[arg(default_value_t)]
-        bug_name: String,
+        bug_name: Option<String>,
     },
 }
 
@@ -118,22 +117,21 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     switch_status_t::SWITCH_STATUS_SUCCESS
 }
 
-fn api_stop(session_id: String, bug_name: String) -> Result<()> {
-    let key = CString::new(bug_name.clone())?;
+fn api_stop(session_id: String, bug_name: Option<String>) -> Result<()> {
+    let bug_name = bug_name.and_then(|s| CString::new(s).ok());
+    let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
     let (session, bug) = Session::locate(&session_id)
         .and_then(|s| unsafe {
             s.get_channel()
-                .and_then(|c| c.get_private_with_key::<MediaBugHandle>(&key).cloned())
+                .and_then(|c| c.get_private_with_key::<MediaBugHandle>(key).cloned())
                 .map(|b| (s, b))
         })
-        .ok_or(anyhow!(
-            "Unable to find bug {bug_name} for session {session_id}"
-        ))?;
+        .ok_or(anyhow!("Unable to find bug for session {session_id}"))?;
     session.remove_media_bug(bug)?;
     Ok(())
 }
 
-fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
+fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Result<()> {
     debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork start uuid:{}",session_id);
     let session =
         Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
@@ -191,8 +189,9 @@ fn api_start(session_id: String, url: String, bug_name: String) -> Result<()> {
 
     let res = {
         let channel = session.get_channel().ok_or(anyhow!("missing channel"))?;
-        let key = CString::new(bug_name).unwrap();
-        channel.set_private_with_key(&key, bug.clone())?;
+        let bug_name = bug_name.and_then(|s| CString::new(s).ok());
+        let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
+        channel.set_private_with_key(key, bug.clone())?;
         Ok(())
     };
     if let Err(err) = res {
