@@ -1,6 +1,5 @@
 use anyhow::Result;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocket, WebSocketError};
-use freeswitch_rs::log::debug;
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -9,14 +8,12 @@ use hyper::{
 };
 use std::ops::DerefMut;
 use std::sync::Arc;
-use std::time::Duration;
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
 use tokio::pin;
 use tokio::sync::Notify;
 use url::Url;
 
-const PACKETIZATION_PERIOD: u32 = 20; // ms 
 const CANCEL_REASON: &str = "LOCAL_CANCEL";
 pub type WSRequest = Request<Empty<Bytes>>;
 

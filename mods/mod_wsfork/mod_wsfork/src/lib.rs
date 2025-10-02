@@ -95,10 +95,10 @@ impl LoadableModule for FSMod {
 
 #[switch_api_define(name = "wsfork", desc = "fork audio frames over websocket")]
 fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
-    info!(channel=SWITCH_CHANNEL_ID_LOG; "mod wsfork cmd {}", &cmd);
+    debug!(channel=SWITCH_CHANNEL_ID_LOG; "mod wsfork cmd {}", &cmd);
     match parse_args(cmd) {
         Err(e) => {
-            let _ = write!(stream, "-ERR, mod wsfork invalid usage\n{}", e);
+            error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork invalid usage:\n{}", &e);
         }
         Ok(cmd) => {
             let res = match cmd {
@@ -111,6 +111,9 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
             };
             if let Err(e) = res {
                 error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork error: {}", &e);
+                let _ = write!(stream, "-ERR, mod wsfork operation failed");
+            } else {
+                let _ = write!(stream, "+OK Success");
             }
         }
     }
