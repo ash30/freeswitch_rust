@@ -62,11 +62,10 @@ impl From<TrySendError> for WSForkerError {
 pub fn new_wsfork(
     url: url::Url,
     frame_size: usize,
-    buf_duration: Duration,
+    buffer_duration: usize,
     headers: impl FnOnce(&mut WSRequest),
 ) -> Result<(WSForkSender, WSForkReceiver)> {
-    let capacity = buf_duration.as_millis().clamp(20, 100) as u32 / PACKETIZATION_PERIOD;
-    let (tx, rx) = thingbuf::mpsc::with_recycle(capacity as usize, DataBufferFactory(frame_size));
+    let (tx, rx) = thingbuf::mpsc::with_recycle(buffer_duration, DataBufferFactory(frame_size));
 
     let mut req = create_request(url)?;
     (headers(&mut req));
