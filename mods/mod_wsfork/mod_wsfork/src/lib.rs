@@ -140,29 +140,20 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
         Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
 
     let url = url::Url::parse(&url)?;
-    let mut addrs = url.socket_addrs(|| None)?;
-    let addr = addrs.pop().ok_or(anyhow!(""))?;
+    let addr = url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))?;
 
-    let frame_size = unsafe {
+    let read_impl = unsafe {
         freeswitch_sys::switch_core_session_get_read_codec(session.as_ptr())
             .as_ref()
             .and_then(|c| c.implementation.as_ref())
-            .map(|i| i.decoded_bytes_per_packet)
-    }
-    .ok_or(anyhow!("unknown packet length"))?;
+            .ok_or(anyhow!(""))?
+    };
+    let frame_size = read_impl.decoded_bytes_per_packet;
 
     // Hardcode buffer length for now
     let buffer_duration = Duration::from_millis(100);
-    let buffer_len = unsafe {
-        freeswitch_sys::switch_core_session_get_read_codec(session.as_ptr())
-            .as_ref()
-            .and_then(|c| c.implementation.as_ref())
-            .map(
-                |i| (i.samples_per_packet / i.samples_per_second) * 1000, //ms per packet
-            )
-            .map(|ms| (buffer_duration.as_millis() as u32).div_ceil(ms))
-    }
-    .ok_or(anyhow!("unknown codec data"))?;
+    let ms_per_packet = (read_impl.samples_per_packet / read_impl.samples_per_second) * 1000;
+    let buffer_len = (buffer_duration.as_millis() as u32).div_ceil(ms_per_packet);
 
     let (tx, rx) = new_wsfork(
         url.clone(),
