@@ -63,6 +63,7 @@ macro_rules! fs_new_type{
         #[derive(Debug $(, $derive)*)]
         pub struct $wrapper($inner);
 
+        #[automatically_derived]
         impl crate::utils::FSNewType for $wrapper {
             type Inner = $inner;
             fn from_ptr(ptr:$inner) -> Self {
@@ -84,6 +85,7 @@ macro_rules! fs_session_owned_type {
         #[derive(Debug $(, $derive)*)]
         pub struct $wrapper<'a>($inner, std::marker::PhantomData<&'a Session>);
 
+        #[automatically_derived]
         impl<'a> crate::utils::FSNewType for $wrapper<'a> {
             type Inner = $inner;
             fn from_ptr(ptr:$inner) -> Self {
