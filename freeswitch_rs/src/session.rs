@@ -240,8 +240,10 @@ impl<'a> Channel<'a> {
 
 pub type MediaBugFlags = freeswitch_sys::switch_media_bug_flag_enum_t;
 
-fs_new_type!(MediaBugHandle, *mut switch_media_bug_t, derive(Clone));
 fs_session_owned_type!(MediaBug, *mut switch_media_bug_t);
+fs_new_type!(MediaBugHandle, *mut switch_media_bug_t, derive(Clone));
+
+unsafe impl Send for MediaBugHandle {}
 
 unsafe extern "C" fn bug_extern_callback<F>(
     arg1: *mut switch_media_bug_t,
