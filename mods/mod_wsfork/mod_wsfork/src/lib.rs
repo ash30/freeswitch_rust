@@ -4,6 +4,7 @@ use fastwebsockets::handshake;
 use hyper_util::rt::TokioExecutor;
 use tokio::runtime;
 use tokio::runtime::Runtime;
+use tokio::time::timeout;
 use wsfork_events::Body;
 pub use wsfork_events::MOD_WSFORK_EVENT;
 use wsfork_events::WSForkEvent;
@@ -18,7 +19,9 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::Weak;
 use std::time::Duration;
 use tokio::net::TcpStream;
 
@@ -58,6 +61,11 @@ fn parse_args(cmd_str: &str) -> Result<Subcommands> {
     let matches = cmd.try_get_matches_from(cmd_str.split(' '))?;
     let s = Subcommands::from_arg_matches(&matches)?;
     Ok(s)
+}
+
+struct PrivateModData {
+    tx: audio_fork::WSForkSender,
+    bug: Mutex<Option<MediaBugHandle>>,
 }
 
 #[switch_module_define(mod_wsfork)]
@@ -121,16 +129,25 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
 }
 
 fn api_stop(session_id: String, bug_name: Option<String>) -> Result<()> {
+    let session =
+        Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
+
     let bug_name = bug_name.and_then(|s| CString::new(s).ok());
     let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
-    let (session, bug) = Session::locate(&session_id)
-        .and_then(|s| unsafe {
-            s.get_channel()
-                .and_then(|c| c.get_private_with_key::<MediaBugHandle>(key).cloned())
-                .map(|b| (s, b))
-        })
-        .ok_or(anyhow!("Unable to find bug for session {session_id}"))?;
-    session.remove_media_bug(bug)?;
+    let ptr = unsafe {
+        session
+            .get_channel()
+            .and_then(|c| c.get_private_raw_ptr(key))
+            .map(|ptr| Weak::from_raw(ptr as *const PrivateModData))
+            .ok_or(anyhow!(""))
+    }?;
+
+    if ptr.upgrade().map(|data| data.tx.cancel()).is_none() {
+        warn!(channel=SWITCH_CHANNEL_ID_SESSION; "Failed to stop Wsfork");
+    }
+    // Stop drop invalidating channel ptr
+    let _ = ptr.into_raw();
+
     Ok(())
 }
 
@@ -138,22 +155,21 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
     debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork start uuid:{}",session_id);
     let session =
         Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
-
-    let url = url::Url::parse(&url)?;
-    let addr = url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))?;
-
     let read_impl = unsafe {
         freeswitch_sys::switch_core_session_get_read_codec(session.as_ptr())
             .as_ref()
             .and_then(|c| c.implementation.as_ref())
             .ok_or(anyhow!(""))?
     };
-    let frame_size = read_impl.decoded_bytes_per_packet;
 
+    let frame_size = read_impl.decoded_bytes_per_packet;
     // Hardcode buffer length for now
     let buffer_duration = Duration::from_millis(100);
     let ms_per_packet = (read_impl.samples_per_packet / read_impl.samples_per_second) * 1000;
     let buffer_len = (buffer_duration.as_millis() as u32).div_ceil(ms_per_packet);
+
+    let url = url::Url::parse(&url)?;
+    let addr = url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))?;
 
     let (tx, rx) = new_wsfork(
         url.clone(),
@@ -161,25 +177,79 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
         buffer_len as usize,
         |_| {},
     )?;
-    let owned = Arc::new(tx);
-    let weak_ref = Arc::downgrade(&owned);
 
-    let bug = session.add_media_bug(
+    let mod_data = Arc::new(PrivateModData {
+        tx,
+        bug: Mutex::new(None),
+    });
+
+    let mut send_task = RT.get().unwrap().spawn(async move {
+        // TODO: Reconnection logic
+        let req = rx.req.clone();
+        let res = async move {
+            let stream = TcpStream::connect(addr).await?;
+            let executor = TokioExecutor::new();
+            let (ws, _) = handshake::client(&executor, req, stream).await?;
+            Ok::<_, anyhow::Error>(ws)
+        }
+        .await;
+
+        match res {
+            Err(e) => response_handler(
+                session_id.clone(),
+                wsfork_events::Body::Error {
+                    desc: format!("{:#}", e),
+                },
+            ),
+            Ok(ws) => {
+                let _ = rx
+                    .run(ws, |event| response_handler(session_id.clone(), event))
+                    .await;
+            }
+        };
+    });
+
+    let bug_name = bug_name.and_then(|s| CString::new(s).ok());
+
+    let bug = {
+        let bug_name = bug_name.clone();
+        let mod_data = mod_data.clone();
+
+        session.add_media_bug(
         None,
         None,
         MediaBugFlags::SMBF_READ_STREAM,
         move |bug, abc_type| {
             // For error handling, if we return false from closure
             // FS will prune mal functioning bug ( ie remove it )
-            let Some(handle) = weak_ref.upgrade() else {
-                return false;
-            };
+            let tx = &mod_data.tx;
             match abc_type {
                 switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
-                    handle.cancel();
+                    // Wait for task to complete so we can ensure it
+                    // doesn't hold any session resources
+                    tx.cancel();
+                    let res = RT.get().unwrap().block_on(async {
+                        timeout(Duration::from_secs(30), &mut send_task).await
+                    });
+                    if res.is_err() {
+                        warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup sender task");
+                    }
+                    // clean up smart pointers in channel
+                    let key = bug_name
+                        .as_ref()
+                        .map_or(DEFAULT_BUG_KEY, |s| s.deref());
+                    if let None = unsafe {
+                        bug.get_session()
+                            .get_channel()
+                            .and_then(|c| c.get_private_raw_ptr(key))
+                            .map(|ptr| Weak::from_raw(ptr as *const PrivateModData))
+                    } {
+                        warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup Channel ptrs");
+                    }
                 }
+
                 switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                    match handle.get_next_free_buffer() {
+                    match tx.get_next_free_buffer() {
                         Err(WSForkerError::Full) => {
                             warn!(channel=SWITCH_CHANNEL_ID_LOG; "Buffer full + Packets dropped")
                         }
@@ -202,58 +272,38 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
             };
             true // continue 
         },
-    )?;
+    )
+    }?;
 
-    let res = {
-        let channel = session.get_channel().ok_or(anyhow!("missing channel"))?;
-        let bug_name = bug_name.and_then(|s| CString::new(s).ok());
-        let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
-        channel.set_private_with_key(key, bug.clone())?;
-        Ok(())
+    // Save mod data in channel so future cmds can use
+    mod_data.bug.lock().unwrap().replace(bug.clone());
+    let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
+    let data = Arc::downgrade(&mod_data);
+    let res = unsafe {
+        let channel = session.get_channel().ok_or(anyhow!("Missing Channel"))?;
+        channel.set_private_raw_ptr(key, Weak::into_raw(data))
     };
     if let Err(err) = res {
         error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to record bug in channel: {err}");
         let _ = session.remove_media_bug(bug);
-        return Err(err);
+        return Err(err.into());
     }
 
-    let response_handler = move |change: Body| {
-        let _ = Event::new_custom_event(MOD_WSFORK_EVENT).and_then(|mut fs_event| {
-            let data = WSForkEvent {
-                session: session_id.clone(),
-                body: change,
-            };
-            if let Some(session) = Session::locate(&session_id)
-                && let Some(channel) = session.get_channel()
-            {
-                fs_event.set_channel_data(&channel);
-            }
-            let _ = fs_event.set_body(serde_json::to_string(&data).unwrap_or_default());
-            fs_event.fire()
-        });
-    };
-
-    RT.get().unwrap().spawn(async move {
-        // TODO: Reconnection logic
-        let req = rx.req.clone();
-        let res = async move {
-            let stream = TcpStream::connect(addr).await?;
-            let executor = TokioExecutor::new();
-            let (ws, _) = handshake::client(&executor, req, stream).await?;
-            Ok::<_, anyhow::Error>(ws)
-        }
-        .await;
-
-        match res {
-            Err(e) => response_handler(wsfork_events::Body::Error {
-                desc: format!("{:#}", e),
-            }),
-            Ok(ws) => {
-                let _ = rx.run(ws, response_handler.clone()).await;
-            }
-        };
-        drop(owned);
-    });
-
     Ok(())
+}
+
+fn response_handler(session_id: String, change: Body) {
+    let _ = Event::new_custom_event(MOD_WSFORK_EVENT).and_then(|mut fs_event| {
+        let data = WSForkEvent {
+            session: session_id.clone(),
+            body: change,
+        };
+        if let Some(session) = Session::locate(&session_id)
+            && let Some(channel) = session.get_channel()
+        {
+            fs_event.set_channel_data(&channel);
+        }
+        let _ = fs_event.set_body(serde_json::to_string(&data).unwrap_or_default());
+        fs_event.fire()
+    });
 }
