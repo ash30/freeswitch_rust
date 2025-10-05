@@ -179,7 +179,7 @@ impl<'a> Channel<'a> {
             let ptr = self.get_private_raw_ptr(key)?;
             let t = T::from_value(ptr);
             let ret = Some(t.clone());
-            t.into_value();
+            let _ = t.into_value();
             ret
         }
     }
@@ -217,9 +217,12 @@ impl<'a> Channel<'a> {
         }
     }
 
-    pub fn remove_private_with_key<T: IntoChannelValue>(&self, key: &CStr) {
+    pub fn remove_private<T: IntoChannelValue>(&self, key: &CStr) -> Result<()> {
         unsafe {
-            switch_channel_set_private(self.as_ptr(), key.as_ptr(), ptr::null());
+            match switch_channel_set_private(self.as_ptr(), key.as_ptr(), ptr::null()) {
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
+                other => Err(other.into()),
+            }
         }
     }
 
