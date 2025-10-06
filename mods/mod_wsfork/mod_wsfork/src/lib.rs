@@ -110,6 +110,7 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
                 Subcommands::Stop { .. } => api_stop(&data),
                 Subcommands::Pause { .. } => api_pause(&data, true),
                 Subcommands::Resume { .. } => api_pause(&data, false),
+                Subcommands::SendText { text, ..} => api_send_text(&data, text.to_owned()),
                 _ => Ok(()),
             })
             .unwrap_or(Err(anyhow!("Failed to find fork for session {session_id}")))
@@ -132,6 +133,11 @@ fn api_pause(data: &PrivateSessionData, pause: bool) -> Result<()> {
 
 fn api_stop(data: &PrivateSessionData) -> Result<()> {
     data.tx.cancel();
+    Ok(())
+}
+
+fn api_send_text(data:&PrivateSessionData, msg:String) -> Result<()> {
+    data.tx.send_message(msg.into_bytes())?;
     Ok(())
 }
 

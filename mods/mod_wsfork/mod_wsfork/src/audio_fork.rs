@@ -6,8 +6,8 @@ use hyper::{
     body::Bytes,
     header::{CONNECTION, UPGRADE},
 };
-use std::ops::DerefMut;
-use std::sync::Arc;
+use std::{fmt::Display, sync::Arc};
+use std::{fmt::Error, ops::DerefMut};
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
 use tokio::pin;
@@ -43,15 +43,33 @@ impl Recycle<DataBuffer> for DataBufferFactory {
     }
 }
 
+#[derive(Debug)]
 pub enum WSForkerError {
     Full,
     Closed,
 }
+impl Display for WSForkerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+impl std::error::Error for WSForkerError {}
+
 impl From<TrySendError> for WSForkerError {
     fn from(value: TrySendError) -> Self {
         match value {
             TrySendError::Full(_) => Self::Full,
             _ => Self::Closed,
+        }
+    }
+}
+
+use tokio::sync::mpsc::error as tokio_err;
+impl<T> From<tokio_err::TrySendError<T>> for WSForkerError {
+    fn from(value: tokio_err::TrySendError<T>) -> Self {
+        match value {
+            tokio_err::TrySendError::Full(..) => Self::Full,
+            tokio_err::TrySendError::Closed(..) => Self::Closed,
         }
     }
 }
@@ -62,7 +80,9 @@ pub fn new_wsfork(
     buffer_duration: usize,
     headers: impl FnOnce(&mut WSRequest),
 ) -> Result<(WSForkSender, WSForkReceiver)> {
-    let (tx, rx) = thingbuf::mpsc::with_recycle(buffer_duration, DataBufferFactory(frame_size));
+    let (tx_audio, rx_audio) =
+        thingbuf::mpsc::with_recycle(buffer_duration, DataBufferFactory(frame_size));
+    let (tx_msg, rx_msg) = tokio::sync::mpsc::channel(buffer_duration);
 
     let mut req = create_request(url)?;
     (headers(&mut req));
@@ -71,15 +91,22 @@ pub fn new_wsfork(
 
     Ok((
         WSForkSender {
-            tx,
+            tx_audio,
+            tx_msg,
             cancel: cancel.clone(),
         },
-        WSForkReceiver { req, rx, cancel },
+        WSForkReceiver {
+            req,
+            rx_audio,
+            rx_msg,
+            cancel,
+        },
     ))
 }
 
 pub struct WSForkReceiver {
-    rx: thingbuf::mpsc::Receiver<DataBuffer, DataBufferFactory>,
+    rx_audio: thingbuf::mpsc::Receiver<DataBuffer, DataBufferFactory>,
+    rx_msg: tokio::sync::mpsc::Receiver<Vec<u8>>,
     pub req: WSRequest,
     cancel: Arc<Notify>,
 }
@@ -104,7 +131,7 @@ impl WSForkReceiver {
     }
 
     async fn run_loop<S>(
-        self,
+        mut self,
         mut ws: WebSocket<S>,
         on_event: impl Fn(wsfork_events::Body),
     ) -> std::result::Result<(), WebSocketError>
@@ -119,7 +146,7 @@ impl WSForkReceiver {
         on_event(wsfork_events::Body::Connected {});
 
         let close = 'outer: loop {
-            let fut = self.rx.recv_ref();
+            let fut = self.rx_audio.recv_ref();
             pin!(fut);
 
             let cancel = self.cancel.notified();
@@ -132,6 +159,13 @@ impl WSForkReceiver {
                     _ = &mut cancel => {
                         break 'outer Ok(None)
                     }
+                    next_send_msg = self.rx_msg.recv() => {
+                        if let Some(msg) = next_send_msg {
+                            // TODO
+                            let _ = ws.write_frame(Frame::text(msg.into())).await;
+                        }
+                    }
+
                     next_send = &mut fut => {
                         if let Some(frame) = next_send {
                             ws.write_frame(Frame::binary(fastwebsockets::Payload::Borrowed(
@@ -197,7 +231,8 @@ impl WSForkReceiver {
 }
 
 pub struct WSForkSender {
-    tx: thingbuf::mpsc::Sender<DataBuffer, DataBufferFactory>,
+    tx_audio: thingbuf::mpsc::Sender<DataBuffer, DataBufferFactory>,
+    tx_msg: tokio::sync::mpsc::Sender<Vec<u8>>,
     cancel: Arc<Notify>,
 }
 
@@ -205,7 +240,11 @@ impl WSForkSender {
     pub fn get_next_free_buffer(
         &self,
     ) -> std::result::Result<impl DerefMut<Target = DataBuffer>, WSForkerError> {
-        self.tx.try_send_ref().map_err(|e| e.into())
+        self.tx_audio.try_send_ref().map_err(|e| e.into())
+    }
+
+    pub fn send_message(&self, data: Vec<u8>) -> Result<(), WSForkerError> {
+        self.tx_msg.try_send(data).map_err(|e| e.into())
     }
 
     pub fn cancel(&self) {
