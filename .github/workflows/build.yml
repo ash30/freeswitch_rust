@@ -20,14 +20,18 @@ jobs:
       with:
         nix_path: nixpkgs=channel:nixos-unstable
     - uses: DeterminateSystems/magic-nix-cache-action@v2
-    - run: nix-shell CI.nix --command "cargo build && cargo doc"
+    - run: nix-shell CI.nix --command "cargo build && cargo doc --no-deps"
 
     # uplood docs 
+    - name: Add redirect
+      run: echo '<meta http-equiv="refresh" content="0;url=freeswitch_rs/index.html">' > target/doc/index.html
+    - name: Remove lock file
+      run: rm target/doc/.lock
     - name: Upload to GitHub Pages (main branch only)
       if: github.ref == 'refs/heads/main'
       uses: actions/upload-pages-artifact@v3
       with:
-        path: target/doc/freeswitch_rs/
+        path: target/doc/
     - name: Deploy to GitHub Pages (main branch only)
       if: github.ref == 'refs/heads/main'
       uses: actions/deploy-pages@v4
