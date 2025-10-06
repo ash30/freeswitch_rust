@@ -13,9 +13,7 @@ pkgs.mkShell {
   buildInputs = [
     (import (builtins.fetchGit { url = "https://github.com/ash30/freeswitch"; ref =  "github_action_debug";  rev = "4513fbdafc0d386e18ae651dc8c5929cb9e5fb74";}) {})
     pkgs.pkg-config
-    pkgs.rust-bin.stable.latest.rust-analyzer # LSP Server
     pkgs.rust-bin.stable.latest.rustfmt       # Formatter
     pkgs.rust-bin.stable.latest.clippy        # Linter
   ];
-  RUST_SRC_PATH = "${rustc}/lib/rustlib/src/rust/library/";
 }
