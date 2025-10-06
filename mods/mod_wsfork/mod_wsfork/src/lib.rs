@@ -25,8 +25,6 @@ use crate::audio_fork::{WSForkerError, new_wsfork};
 
 static RT: OnceLock<Runtime> = OnceLock::new();
 
-const DEFAULT_BUG_KEY: &CStr = c"MOD_WSFORK_BUG_KEY";
-
 struct PrivateSessionData {
     tx: audio_fork::WSForkSender,
     bug: Mutex<Option<MediaBugHandle>>,
@@ -88,19 +86,18 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
         return switch_status_t::SWITCH_STATUS_SUCCESS;
     };
 
-    let bug_name = bug_name.clone().and_then(|s| CString::new(s).ok());
-    let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
+    let fork_name = CString::new(bug_name.to_owned()).unwrap();
     let s = session_id.to_owned();
 
     let res = match &cmd {
-        Subcommands::Start { url, .. } => api_start(&session, key, url.to_owned(), move |event| {
+        Subcommands::Start { url, start_paused, .. } => api_start(&session, &fork_name, url.to_owned(), *start_paused, move |event| {
             response_handler(&s, event)
         }),
         other_cmds => {
             let data = unsafe {
                 session
                     .get_channel()
-                    .and_then(|c| c.get_private_raw_ptr(key))
+                    .and_then(|c| c.get_private_raw_ptr(&fork_name))
                     .map(|ptr| Weak::from_raw(ptr as *const PrivateSessionData))
                     // make sure to 'downgrade' weak ptr to avoid drop!
                     .map(|p| (p.upgrade(), p.into_raw()))
@@ -143,8 +140,9 @@ fn api_send_text(data:&PrivateSessionData, msg:String) -> Result<()> {
 
 fn api_start(
     session: &Session,
-    bug_name: &CStr,
+    fork_name: &CStr,
     url: String,
+    start_paused: bool,
     response_handler: impl Fn(Body) + Send + Sync + 'static,
 ) -> Result<()> {
     let url = url::Url::parse(&url)?;
@@ -173,7 +171,7 @@ fn api_start(
     let mod_data = Arc::new(PrivateSessionData {
         tx,
         bug: Mutex::new(None),
-        paused: AtomicBool::new(false),
+        paused: AtomicBool::new(start_paused),
     });
 
     let mut send_task = RT.get().unwrap().spawn(async move {
@@ -198,7 +196,7 @@ fn api_start(
     });
 
     let bug = {
-        let bug_name = bug_name.to_owned();
+        let fork_name = fork_name.to_owned();
         let mod_data = mod_data.clone();
 
         session.add_media_bug(
@@ -223,10 +221,10 @@ fn api_start(
                     // clean up smart pointers in channel
                     unsafe {
                         if let Some(channel) = bug.get_session().get_channel() 
-                            && let Some(ptr) = channel.get_private_raw_ptr(&bug_name)
+                            && let Some(ptr) = channel.get_private_raw_ptr(&fork_name)
                         {
                             let weak_ref = Weak::from_raw(ptr as *const PrivateSessionData);
-                            let _ = channel.set_private_raw_ptr(&bug_name, std::ptr::null::<PrivateSessionData>());
+                            let _ = channel.set_private_raw_ptr(&fork_name, std::ptr::null::<PrivateSessionData>());
                             RT.get().unwrap().spawn(async move {
                                 // we need to ensure no-one else is reading the ptr ....
                                 // current work around is to delay cleanup until way after 
@@ -277,7 +275,7 @@ fn api_start(
     let data = Arc::downgrade(&mod_data);
     let res = unsafe {
         let channel = session.get_channel().ok_or(anyhow!("Missing Channel"))?;
-        channel.set_private_raw_ptr(bug_name, Weak::into_raw(data))
+        channel.set_private_raw_ptr(fork_name, Weak::into_raw(data))
     };
     if let Err(err) = res {
         error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to record bug in channel: {err}");

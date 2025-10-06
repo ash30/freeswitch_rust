@@ -4,15 +4,17 @@ use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
 #[derive(Parser, Debug)]
 pub(crate) struct Common {
     pub session_id: String,
-    pub bug_name: Option<String>,
+    pub bug_name: String,
 }
 
 #[derive(Parser, Debug)]
 pub(crate) enum Subcommands {
     Start {
-        url: String,
         #[command(flatten)]
         fork: Common,
+        url: String,
+        #[arg(default_value_t = false)]
+        start_paused: bool,
     },
     Stop {
         #[command(flatten)]
@@ -27,9 +29,9 @@ pub(crate) enum Subcommands {
         fork: Common,
     },
     SendText {
-        text: String,
         #[command(flatten)]
         fork: Common,
+        text: String,
     },
 }
 
