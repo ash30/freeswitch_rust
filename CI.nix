@@ -9,8 +9,9 @@ let pkgs = import (builtins.fetchTarball https://github.com/NixOS/nixpkgs/archiv
   rustPlatform = pkgs.makeRustPlatform { rustc = rustc; cargo = cargo;};
 in
 pkgs.mkShell {
+  inputsFrom = [ (pkgs.callPackage ./default.nix { inherit rustPlatform; }) ];
   buildInputs = [
-    (import (builtins.fetchGit { url = "https://github.com/ash30/freeswitch"; ref =  "nix";  rev = "2ecd26beeba14c0d66bda5ec471d68747e0b33b3";}) {})
+    (import (builtins.fetchGit { url = "https://github.com/ash30/freeswitch"; ref =  "github_action_debug";  rev = "9836f592dcfc6701196969c01ea8dc051b786011";}) {})
     pkgs.pkg-config
     pkgs.rust-bin.stable.latest.rust-analyzer # LSP Server
     pkgs.rust-bin.stable.latest.rustfmt       # Formatter
