@@ -1,9 +1,16 @@
 name: "Build"
+
 on:
   pull_request:
   push:
     branches: 
       - main
+      
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+      
 jobs:
   build:
     runs-on: ubuntu-latest
