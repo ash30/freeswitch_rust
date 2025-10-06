@@ -11,7 +11,7 @@ in
 pkgs.mkShell {
   inputsFrom = [ (pkgs.callPackage ./default.nix { inherit rustPlatform; }) ];
   buildInputs = [
-    (import (builtins.fetchGit { url = "https://github.com/ash30/freeswitch"; ref =  "github_action_debug";  rev = "b8f064275faa777b4328b16618775dfe13a3e7cc";}) {})
+    (import (builtins.fetchGit { url = "https://github.com/ash30/freeswitch"; ref =  "github_action_debug";  rev = "6699433e7a30f4eb406df7e0d163be1b16b3f507";}) {})
     pkgs.pkg-config
     pkgs.rust-bin.stable.latest.rust-analyzer # LSP Server
     pkgs.rust-bin.stable.latest.rustfmt       # Formatter
