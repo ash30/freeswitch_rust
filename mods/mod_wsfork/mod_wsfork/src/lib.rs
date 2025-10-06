@@ -1,71 +1,36 @@
+mod arg_parse;
 mod audio_fork;
 
+use anyhow::{Result, anyhow};
 use fastwebsockets::handshake;
 use hyper_util::rt::TokioExecutor;
-use tokio::runtime;
-use tokio::runtime::Runtime;
-use tokio::time::timeout;
+use tokio::net::TcpStream;
+use tokio::runtime::{Builder, Runtime};
+use tokio::time::{sleep, timeout};
+
 use wsfork_events::Body;
 pub use wsfork_events::MOD_WSFORK_EVENT;
 use wsfork_events::WSForkEvent;
 
-use anyhow::Result;
-use anyhow::anyhow;
-use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
-
-use freeswitch_rs::Session;
-use freeswitch_rs::switch_status_t;
-use std::ffi::CStr;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::ops::Deref;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::OnceLock;
-use std::sync::Weak;
+use std::sync::{Arc, Mutex, OnceLock, Weak, atomic::AtomicBool, atomic::Ordering};
 use std::time::Duration;
-use tokio::net::TcpStream;
 
 use freeswitch_rs::log::{debug, error, info, warn};
 use freeswitch_rs::*;
 
-use crate::audio_fork::WSForkerError;
-use crate::audio_fork::new_wsfork;
+use crate::arg_parse::{Common, Subcommands, parse_args};
+use crate::audio_fork::{WSForkerError, new_wsfork};
 
 static RT: OnceLock<Runtime> = OnceLock::new();
 
 const DEFAULT_BUG_KEY: &CStr = c"MOD_WSFORK_BUG_KEY";
 
-#[derive(Parser, Debug)]
-enum Subcommands {
-    Start {
-        #[arg()]
-        session: String,
-        #[arg()]
-        url: String,
-        bug_name: Option<String>,
-    },
-    Stop {
-        #[arg()]
-        session: String,
-        bug_name: Option<String>,
-    },
-}
-
-fn parse_args(cmd_str: &str) -> Result<Subcommands> {
-    let mut cmd = Command::new("wsfork")
-        .disable_version_flag(true)
-        .disable_help_flag(true)
-        .ignore_errors(true)
-        .no_binary_name(true);
-    cmd = Subcommands::augment_subcommands(cmd);
-    let matches = cmd.try_get_matches_from(cmd_str.split(' '))?;
-    let s = Subcommands::from_arg_matches(&matches)?;
-    Ok(s)
-}
-
-struct PrivateModData {
+struct PrivateSessionData {
     tx: audio_fork::WSForkSender,
     bug: Mutex<Option<MediaBugHandle>>,
+    paused: AtomicBool,
 }
 
 #[switch_module_define(mod_wsfork)]
@@ -75,7 +40,7 @@ impl LoadableModule for FSMod {
     fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
         info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
         // TODO: make worker count configurable
-        let Result::Ok(runtime) = runtime::Builder::new_multi_thread()
+        let Ok(runtime) = Builder::new_multi_thread()
             .enable_all()
             .worker_threads(5)
             .build()
@@ -104,57 +69,81 @@ impl LoadableModule for FSMod {
 #[switch_api_define(name = "wsfork", desc = "fork audio frames over websocket")]
 fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
     debug!(channel=SWITCH_CHANNEL_ID_LOG; "mod wsfork cmd {}", &cmd);
-    match parse_args(cmd) {
+
+    let cmd = match parse_args(cmd) {
         Err(e) => {
             error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork invalid usage:\n{}", &e);
+            return switch_status_t::SWITCH_STATUS_SUCCESS;
         }
-        Ok(cmd) => {
-            let res = match cmd {
-                Subcommands::Start {
-                    session,
-                    url,
-                    bug_name,
-                } => api_start(session, url, bug_name),
-                Subcommands::Stop { session, bug_name } => api_stop(session, bug_name),
+        Ok(cmd) => cmd,
+    };
+
+    let Common {
+        session_id,
+        bug_name,
+    } = cmd.common_args();
+
+    let Some(session) = Session::locate(session_id) else {
+        error!(channel=SWITCH_CHANNEL_ID_SESSION; "Failed to find session {session_id}");
+        return switch_status_t::SWITCH_STATUS_SUCCESS;
+    };
+
+    let bug_name = bug_name.clone().and_then(|s| CString::new(s).ok());
+    let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
+    let s = session_id.to_owned();
+
+    let res = match &cmd {
+        Subcommands::Start { url, .. } => api_start(&session, key, url.to_owned(), move |event| {
+            response_handler(&s, event)
+        }),
+        other_cmds => {
+            let data = unsafe {
+                session
+                    .get_channel()
+                    .and_then(|c| c.get_private_raw_ptr(key))
+                    .map(|ptr| Weak::from_raw(ptr as *const PrivateSessionData))
+                    // make sure to 'downgrade' weak ptr to avoid drop!
+                    .map(|p| (p.upgrade(), p.into_raw()))
+                    .and_then(|t| t.0)
             };
-            if let Err(e) = res {
-                error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork error: {}", &e);
-                let _ = write!(stream, "-ERR, mod wsfork operation failed");
-            } else {
-                let _ = write!(stream, "+OK Success");
-            }
+            data.map(|data| match other_cmds {
+                Subcommands::Stop { .. } => api_stop(&data),
+                Subcommands::Pause { .. } => api_pause(&data, true),
+                Subcommands::Resume { .. } => api_pause(&data, false),
+                _ => Ok(()),
+            })
+            .unwrap_or(Err(anyhow!("Failed to find fork for session {session_id}")))
         }
+    };
+
+    if let Err(e) = res {
+        error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork error: {}", &e);
+        let _ = write!(stream, "-ERR, mod wsfork operation failed");
+    } else {
+        let _ = write!(stream, "+OK Success");
     }
     switch_status_t::SWITCH_STATUS_SUCCESS
 }
 
-fn api_stop(session_id: String, bug_name: Option<String>) -> Result<()> {
-    let session =
-        Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
-
-    let bug_name = bug_name.and_then(|s| CString::new(s).ok());
-    let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
-    let ptr = unsafe {
-        session
-            .get_channel()
-            .and_then(|c| c.get_private_raw_ptr(key))
-            .map(|ptr| Weak::from_raw(ptr as *const PrivateModData))
-            .ok_or(anyhow!(""))
-    }?;
-
-    if ptr.upgrade().map(|data| data.tx.cancel()).is_none() {
-        warn!(channel=SWITCH_CHANNEL_ID_SESSION; "Failed to stop Wsfork");
-    }
-    // Stop drop invalidating channel ptr
-    let _ = ptr.into_raw();
-
+fn api_pause(data: &PrivateSessionData, pause: bool) -> Result<()> {
+    data.paused.store(pause, Ordering::Relaxed);
     Ok(())
 }
 
-fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Result<()> {
-    debug!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork start uuid:{}",session_id);
-    let session =
-        Session::locate(&session_id).ok_or(anyhow!("Session Not Found: {}", session_id))?;
+fn api_stop(data: &PrivateSessionData) -> Result<()> {
+    data.tx.cancel();
+    Ok(())
+}
+
+fn api_start(
+    session: &Session,
+    bug_name: &CStr,
+    url: String,
+    response_handler: impl Fn(Body) + Send + Sync + 'static,
+) -> Result<()> {
+    let url = url::Url::parse(&url)?;
+    let addr = url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))?;
+
     let read_impl = unsafe {
         freeswitch_sys::switch_core_session_get_read_codec(session.as_ptr())
             .as_ref()
@@ -168,9 +157,6 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
     let ms_per_packet = (read_impl.samples_per_packet / read_impl.samples_per_second) * 1000;
     let buffer_len = (buffer_duration.as_millis() as u32).div_ceil(ms_per_packet);
 
-    let url = url::Url::parse(&url)?;
-    let addr = url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))?;
-
     let (tx, rx) = new_wsfork(
         url.clone(),
         frame_size as usize,
@@ -178,9 +164,10 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
         |_| {},
     )?;
 
-    let mod_data = Arc::new(PrivateModData {
+    let mod_data = Arc::new(PrivateSessionData {
         tx,
         bug: Mutex::new(None),
+        paused: AtomicBool::new(false),
     });
 
     let mut send_task = RT.get().unwrap().spawn(async move {
@@ -195,24 +182,17 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
         .await;
 
         match res {
-            Err(e) => response_handler(
-                session_id.clone(),
-                wsfork_events::Body::Error {
-                    desc: format!("{:#}", e),
-                },
-            ),
+            Err(e) => response_handler(wsfork_events::Body::Error {
+                desc: format!("{:#}", e),
+            }),
             Ok(ws) => {
-                let _ = rx
-                    .run(ws, |event| response_handler(session_id.clone(), event))
-                    .await;
+                let _ = rx.run(ws, &response_handler).await;
             }
         };
     });
 
-    let bug_name = bug_name.and_then(|s| CString::new(s).ok());
-
     let bug = {
-        let bug_name = bug_name.clone();
+        let bug_name = bug_name.to_owned();
         let mod_data = mod_data.clone();
 
         session.add_media_bug(
@@ -222,33 +202,44 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
         move |bug, abc_type| {
             // For error handling, if we return false from closure
             // FS will prune mal functioning bug ( ie remove it )
-            let tx = &mod_data.tx;
+            let PrivateSessionData { tx, paused ,..} = &mod_data.deref();
             match abc_type {
                 switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
                     // Wait for task to complete so we can ensure it
                     // doesn't hold any session resources
                     tx.cancel();
                     let res = RT.get().unwrap().block_on(async {
-                        timeout(Duration::from_secs(30), &mut send_task).await
+                        timeout(Duration::from_secs(5), &mut send_task).await
                     });
                     if res.is_err() {
                         warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup sender task");
                     }
                     // clean up smart pointers in channel
-                    let key = bug_name
-                        .as_ref()
-                        .map_or(DEFAULT_BUG_KEY, |s| s.deref());
-                    if let None = unsafe {
-                        bug.get_session()
-                            .get_channel()
-                            .and_then(|c| c.get_private_raw_ptr(key))
-                            .map(|ptr| Weak::from_raw(ptr as *const PrivateModData))
-                    } {
-                        warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup Channel ptrs");
-                    }
+                    unsafe {
+                        if let Some(channel) = bug.get_session().get_channel() 
+                            && let Some(ptr) = channel.get_private_raw_ptr(&bug_name)
+                        {
+                            let weak_ref = Weak::from_raw(ptr as *const PrivateSessionData);
+                            let _ = channel.set_private_raw_ptr(&bug_name, std::ptr::null::<PrivateSessionData>());
+                            RT.get().unwrap().spawn(async move {
+                                // we need to ensure no-one else is reading the ptr ....
+                                // current work around is to delay cleanup until way after 
+                                // bug removal.
+                                sleep(Duration::from_secs(30)).await;
+                                drop(weak_ref);
+                            });
+                        } 
+                        else {
+                            warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup Channel ptrs");
+                        }
+                            return false
+                    };
                 }
 
                 switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
+                    if paused.load(std::sync::atomic::Ordering::Relaxed) {
+                        return true
+                    }
                     match tx.get_next_free_buffer() {
                         Err(WSForkerError::Full) => {
                             warn!(channel=SWITCH_CHANNEL_ID_LOG; "Buffer full + Packets dropped")
@@ -277,11 +268,10 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
 
     // Save mod data in channel so future cmds can use
     mod_data.bug.lock().unwrap().replace(bug.clone());
-    let key = bug_name.as_ref().map_or(DEFAULT_BUG_KEY, |s| s.deref());
     let data = Arc::downgrade(&mod_data);
     let res = unsafe {
         let channel = session.get_channel().ok_or(anyhow!("Missing Channel"))?;
-        channel.set_private_raw_ptr(key, Weak::into_raw(data))
+        channel.set_private_raw_ptr(bug_name, Weak::into_raw(data))
     };
     if let Err(err) = res {
         error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to record bug in channel: {err}");
@@ -292,13 +282,13 @@ fn api_start(session_id: String, url: String, bug_name: Option<String>) -> Resul
     Ok(())
 }
 
-fn response_handler(session_id: String, change: Body) {
+fn response_handler(session_id: &str, change: Body) {
     let _ = Event::new_custom_event(MOD_WSFORK_EVENT).and_then(|mut fs_event| {
         let data = WSForkEvent {
-            session: session_id.clone(),
+            session: session_id.to_owned(),
             body: change,
         };
-        if let Some(session) = Session::locate(&session_id)
+        if let Some(session) = Session::locate(session_id)
             && let Some(channel) = session.get_channel()
         {
             fs_event.set_channel_data(&channel);
