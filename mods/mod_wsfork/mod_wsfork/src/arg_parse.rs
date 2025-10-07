@@ -7,7 +7,7 @@ pub(crate) struct Common {
     pub bug_name: String,
 }
 
-#[derive(Debug, Copy, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
 pub(crate) enum AudioMix {
     Mono,
     Stereo,
