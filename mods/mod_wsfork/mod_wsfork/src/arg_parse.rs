@@ -1,10 +1,18 @@
 use anyhow::Result;
-use clap::{Command, FromArgMatches as _, Parser, Subcommand as _};
+use clap::{Command, FromArgMatches as _, Parser, Subcommand as _, ValueEnum};
 
 #[derive(Parser, Debug)]
 pub(crate) struct Common {
     pub session_id: String,
     pub bug_name: String,
+}
+
+#[derive(Debug, Copy, ValueEnum, Default)]
+pub(crate) enum AudioMix {
+    Mono,
+    Stereo,
+    #[default]
+    Mixed,
 }
 
 #[derive(Parser, Debug)]
@@ -13,6 +21,8 @@ pub(crate) enum Subcommands {
         #[command(flatten)]
         fork: Common,
         url: String,
+        #[arg(value_enum, default_value_t)]
+        mix: AudioMix,
         #[arg(default_value_t = false)]
         start_paused: bool,
     },

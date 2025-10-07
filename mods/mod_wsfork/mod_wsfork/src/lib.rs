@@ -20,7 +20,7 @@ use std::time::Duration;
 use freeswitch_rs::log::{debug, error, info, warn};
 use freeswitch_rs::*;
 
-use crate::arg_parse::{Common, Subcommands, parse_args};
+use crate::arg_parse::{AudioMix, Common, Subcommands, parse_args};
 use crate::audio_fork::{WSForkerError, new_wsfork};
 
 static RT: OnceLock<Runtime> = OnceLock::new();
@@ -90,9 +90,19 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     let s = session_id.to_owned();
 
     let res = match &cmd {
-        Subcommands::Start { url, start_paused, .. } => api_start(&session, &fork_name, url.to_owned(), *start_paused, move |event| {
-            response_handler(&s, event)
-        }),
+        Subcommands::Start {
+            url,
+            start_paused,
+            mix,
+            ..
+        } => api_start(
+            &session,
+            &fork_name,
+            url.to_owned(),
+            *mix,
+            *start_paused,
+            move |event| response_handler(&s, event),
+        ),
         other_cmds => {
             let data = unsafe {
                 session
@@ -107,7 +117,7 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
                 Subcommands::Stop { .. } => api_stop(&data),
                 Subcommands::Pause { .. } => api_pause(&data, true),
                 Subcommands::Resume { .. } => api_pause(&data, false),
-                Subcommands::SendText { text, ..} => api_send_text(&data, text.to_owned()),
+                Subcommands::SendText { text, .. } => api_send_text(&data, text.to_owned()),
                 _ => Ok(()),
             })
             .unwrap_or(Err(anyhow!("Failed to find fork for session {session_id}")))
@@ -133,7 +143,7 @@ fn api_stop(data: &PrivateSessionData) -> Result<()> {
     Ok(())
 }
 
-fn api_send_text(data:&PrivateSessionData, msg:String) -> Result<()> {
+fn api_send_text(data: &PrivateSessionData, msg: String) -> Result<()> {
     data.tx.send_message(msg.into_bytes())?;
     Ok(())
 }
@@ -142,6 +152,7 @@ fn api_start(
     session: &Session,
     fork_name: &CStr,
     url: String,
+    audio_mix: AudioMix,
     start_paused: bool,
     response_handler: impl Fn(Body) + Send + Sync + 'static,
 ) -> Result<()> {
@@ -155,7 +166,11 @@ fn api_start(
             .ok_or(anyhow!(""))?
     };
 
-    let frame_size = read_impl.decoded_bytes_per_packet;
+    let frame_size = match audio_mix {
+        AudioMix::Stereo => read_impl.decoded_bytes_per_packet * 2,
+        _ => read_impl.decoded_bytes_per_packet,
+    };
+
     // Hardcode buffer length for now
     let buffer_duration = Duration::from_millis(100);
     let ms_per_packet = (read_impl.samples_per_packet / read_impl.samples_per_second) * 1000;
@@ -195,54 +210,63 @@ fn api_start(
         };
     });
 
+    let flags = match audio_mix {
+        AudioMix::Mono => MediaBugFlags::SMBF_READ_STREAM,
+        AudioMix::Mixed => MediaBugFlags::SMBF_READ_STREAM | MediaBugFlags::SMBF_WRITE_STREAM,
+        AudioMix::Stereo => {
+            MediaBugFlags::SMBF_READ_STREAM
+                | MediaBugFlags::SMBF_WRITE_STREAM
+                | MediaBugFlags::SMBF_STEREO
+        }
+    };
+
     let bug = {
         let fork_name = fork_name.to_owned();
         let mod_data = mod_data.clone();
 
-        session.add_media_bug(
-        None,
-        None,
-        MediaBugFlags::SMBF_READ_STREAM,
-        move |bug, abc_type| {
+        session.add_media_bug(None, None, flags, move |bug, abc_type| {
             // For error handling, if we return false from closure
             // FS will prune mal functioning bug ( ie remove it )
-            let PrivateSessionData { tx, paused ,..} = &mod_data.deref();
+            let PrivateSessionData { tx, paused, .. } = &mod_data.deref();
             match abc_type {
                 switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
                     // Wait for task to complete so we can ensure it
                     // doesn't hold any session resources
                     tx.cancel();
-                    let res = RT.get().unwrap().block_on(async {
-                        timeout(Duration::from_secs(5), &mut send_task).await
-                    });
+                    let res = RT
+                        .get()
+                        .unwrap()
+                        .block_on(async { timeout(Duration::from_secs(5), &mut send_task).await });
                     if res.is_err() {
                         warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup sender task");
                     }
                     // clean up smart pointers in channel
                     unsafe {
-                        if let Some(channel) = bug.get_session().get_channel() 
+                        if let Some(channel) = bug.get_session().get_channel()
                             && let Some(ptr) = channel.get_private_raw_ptr(&fork_name)
                         {
                             let weak_ref = Weak::from_raw(ptr as *const PrivateSessionData);
-                            let _ = channel.set_private_raw_ptr(&fork_name, std::ptr::null::<PrivateSessionData>());
+                            let _ = channel.set_private_raw_ptr(
+                                &fork_name,
+                                std::ptr::null::<PrivateSessionData>(),
+                            );
                             RT.get().unwrap().spawn(async move {
                                 // we need to ensure no-one else is reading the ptr ....
-                                // current work around is to delay cleanup until way after 
+                                // current work around is to delay cleanup until way after
                                 // bug removal.
                                 sleep(Duration::from_secs(30)).await;
                                 drop(weak_ref);
                             });
-                        } 
-                        else {
+                        } else {
                             warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup Channel ptrs");
                         }
-                            return false
+                        return false;
                     };
                 }
 
                 switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
                     if paused.load(std::sync::atomic::Ordering::Relaxed) {
-                        return true
+                        return true;
                     }
                     match tx.get_next_free_buffer() {
                         Err(WSForkerError::Full) => {
@@ -266,8 +290,7 @@ fn api_start(
                 _ => {}
             };
             true // continue 
-        },
-    )
+        })
     }?;
 
     // Save mod data in channel so future cmds can use
