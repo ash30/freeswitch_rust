@@ -11,6 +11,7 @@ in
 pkgs.mkShell {
   inputsFrom = [ (pkgs.callPackage ./default.nix { inherit rustPlatform; }) ];
   buildInputs = [
+    pkgs.pkg-config
     pkgs.rust-bin.stable.latest.rust-analyzer # LSP Server
     pkgs.rust-bin.stable.latest.rustfmt       # Formatter
     pkgs.rust-bin.stable.latest.clippy        # Linter

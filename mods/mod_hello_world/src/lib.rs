@@ -1,6 +1,7 @@
+use freeswitch_rs::core::*;
 use freeswitch_rs::log::{debug, info};
 use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
-use freeswitch_rs::*;
+//use freeswitch_rs::*;
 
 #[switch_module_define(mod_hello_world)]
 struct FSModule;

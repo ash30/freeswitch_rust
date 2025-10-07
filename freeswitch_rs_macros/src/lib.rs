@@ -31,9 +31,9 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
 
         impl #struct_name {
             unsafe extern "C" fn load_wrapper (
-                module_interface: *mut *mut freeswitch_rs::switch_loadable_module_interface_t,
-                pool: *mut freeswitch_rs::switch_memory_pool_t,
-            ) -> freeswitch_rs::switch_status_t
+                module_interface: *mut *mut freeswitch_rs::types::switch_loadable_module_interface_t,
+                pool: *mut freeswitch_rs::types::switch_memory_pool_t,
+            ) -> freeswitch_rs::types::switch_status_t
             {
                 let _ = freeswitch_rs::log::set_logger(&freeswitch_rs::FS_LOG);
                 freeswitch_rs::log::set_max_level(freeswitch_rs::log::LevelFilter::Debug);
@@ -47,7 +47,7 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
                 #struct_name::load(module,pool)
             }
 
-            unsafe extern "C" fn shutdown_wrapper() -> freeswitch_rs::switch_status_t
+            unsafe extern "C" fn shutdown_wrapper() -> freeswitch_rs::types::switch_status_t
             {
                 #struct_name::shutdown()
             }
@@ -56,7 +56,7 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
         // Module Table
         #[no_mangle]
         #[allow(non_upper_case_globals)]
-        pub static mut #mod_interface_ident: freeswitch_rs::switch_loadable_module_function_table= freeswitch_rs::switch_loadable_module_function_table{
+        pub static mut #mod_interface_ident: freeswitch_rs::types::switch_loadable_module_function_table = freeswitch_rs::types::switch_loadable_module_function_table {
             switch_api_version: 5,
             load: Some(#struct_name::load_wrapper),
             shutdown: Some(#struct_name::shutdown_wrapper),
@@ -114,14 +114,14 @@ fn impl_switch_api_define(ast: &syn::ItemFn, attrs: ApiAttributes) -> TokenStrea
         impl freeswitch_rs::ApiInterface for #name {
             const NAME:&'static str = #fs_name;
             const DESC:&'static str = #fs_desc;
-            fn api_fn(cmd:&str, session:Option<&freeswitch_rs::Session>, stream:freeswitch_rs::StreamHandle) -> freeswitch_rs::switch_status_t {
+            fn api_fn(cmd:&str, session:Option<&freeswitch_rs::core::Session>, stream:freeswitch_rs::StreamHandle) -> freeswitch_rs::types::switch_status_t {
                 #name::#name(cmd,session,stream)
             }
             unsafe extern "C" fn api_fn_raw(
                 cmd: *const ::std::os::raw::c_char,
-                session: *mut freeswitch_rs::switch_core_session_t,
-                stream: *mut freeswitch_rs::switch_stream_handle_t,
-            ) -> freeswitch_rs::switch_status_t {
+                session: *mut freeswitch_rs::types::switch_core_session_t,
+                stream: *mut freeswitch_rs::types::switch_stream_handle_t,
+            ) -> freeswitch_rs::types::switch_status_t {
                 let cstr = std::ffi::CStr::from_ptr(cmd);
                 let session = None;
                 let stream = freeswitch_rs::StreamHandle(stream);
@@ -146,14 +146,14 @@ fn impl_switch_state_handler(ast: &syn::ItemFn) -> TokenStream {
     let name = &sig.ident;
     let output = quote! {
         mod #name {
-            use freeswitch_rs::Session;
-            use freeswitch_sys::switch_status_t;
+            use freeswitch_rs::core::Session;
+            use freeswitch_sys::types::switch_status_t;
             use crate::*;
             use super::*;
             #ast
         }
 
-        unsafe extern "C" fn #name(session: *mut freeswitch_sys::switch_core_session) -> freeswitch_sys::switch_status_t{
+        unsafe extern "C" fn #name(session: *mut freeswitch_rs::types::switch_core_session_t) -> freeswitch_rs::switch_status_t{
             let s= freeswitch_rs::Session(session);
             #name::#name(&s)
         }

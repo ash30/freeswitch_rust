@@ -17,7 +17,11 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock, Weak, atomic::AtomicBool, atomic::Ordering};
 use std::time::Duration;
 
+use freeswitch_rs::Frame;
+use freeswitch_rs::core::{MediaBugFlags, MediaBugHandle, Session};
+use freeswitch_rs::event::Event;
 use freeswitch_rs::log::{debug, error, info, warn};
+use freeswitch_rs::types::{switch_abc_type_t, switch_status_t};
 use freeswitch_rs::*;
 
 use crate::arg_parse::{AudioMix, Common, Subcommands, parse_args};

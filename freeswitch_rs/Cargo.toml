@@ -8,3 +8,4 @@ cc = { version = "1.0", features = ["parallel"] }
 freeswitch_sys = { path = "../freeswitch_sys" }
 freeswitch_rs_macros = { path = "../freeswitch_rs_macros" }
 log = { version = "0.4.22", features = ["kv"] }
+paste = "1.0.15"

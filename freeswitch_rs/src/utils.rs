@@ -83,7 +83,7 @@ macro_rules! fs_session_owned_type {
     ($wrapper:ident, $inner:ty, derive($($derive:path),*)) => {
 
         #[derive(Debug $(, $derive)*)]
-        pub struct $wrapper<'a>($inner, std::marker::PhantomData<&'a Session>);
+        pub struct $wrapper<'session>($inner, std::marker::PhantomData<&'session crate::core::Session>);
 
         #[automatically_derived]
         impl<'a> crate::utils::FSNewType for $wrapper<'a> {

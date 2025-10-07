@@ -6,6 +6,7 @@ members = [
     "freeswitch_rs_macros",
     "mods/mod_hello_world",
     "tools/generate-schema",
+    "tools/ws_test",
     "mods/mod_wsfork/wsfork_events", 
     "mods/mod_wsfork/mod_wsfork", 
 ]
