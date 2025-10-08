@@ -8,6 +8,7 @@ use crate::prelude::*;
 pub use freeswitch_rs_macros::switch_state_handler;
 type StateHandlerTable = switch_state_handler_table_t;
 
+/// Default state handler table with all callbacks set to `None`.
 pub const DEFAULT_STATE_HANDLER_TABLE: StateHandlerTable = StateHandlerTable {
     on_init: None,
     on_execute: None,
@@ -48,7 +49,9 @@ where
     }
 }
 
-// Channel type lifetime is tied to session
+/// Wrapper around FreeSWITCH channel.
+///
+/// Channel type lifetime is tied to session.
 fs_session_owned_type!(Channel, *mut switch_channel_t);
 type ChannelStateHandlerIndex = usize;
 
@@ -57,6 +60,7 @@ impl<'a> Channel<'a> {
     // since the channels themselve make no claim over ownership.
     // To this end, we require values to implement clone
     // to avoid inadverntanly invalidating the ptr stored.
+    /// Set private data on channel. See: [`switch_channel_set_private`](../../freeswitch_sys/fn.switch_channel_set_private.html).
     pub fn set_private<T>(&self, key: &CStr, data: T) -> Result<()>
     where
         T: IntoChannelValue + Clone,
@@ -75,6 +79,7 @@ impl<'a> Channel<'a> {
         }
     }
 
+    /// Retrieve private data from a given channel for the given key. See: [`switch_channel_get_private`](../../freeswitch_sys/fn.switch_channel_get_private.html).
     pub fn get_private<T>(&self, key: &CStr) -> Option<T>
     where
         T: IntoChannelValue + Clone,
@@ -89,6 +94,8 @@ impl<'a> Channel<'a> {
         }
     }
 
+    /// Set private data on channel. See: [`switch_channel_set_private`](../../freeswitch_sys/fn.switch_channel_set_private.html).
+    ///
     /// # Safety
     ///
     /// Channels do not own or cleanup their data, so caller must ensure ptrs
@@ -105,6 +112,8 @@ impl<'a> Channel<'a> {
         }
     }
 
+    /// Retrieve private data from a given channel for the given key. See: [`switch_channel_get_private`](../../freeswitch_sys/fn.switch_channel_get_private.html).
+    ///
     /// # Safety
     ///
     /// Care must be taken to not invalidate the stored pointer whilst the channel holds the value
@@ -122,6 +131,7 @@ impl<'a> Channel<'a> {
         }
     }
 
+    /// Remove private data from channel for the given key. See: [`switch_channel_set_private`](../../freeswitch_sys/fn.switch_channel_set_private.html).
     pub fn remove_private<T: IntoChannelValue>(&self, key: &CStr) -> Result<()> {
         unsafe {
             match switch_channel_set_private(self.as_ptr(), key.as_ptr(), ptr::null()) {
@@ -131,6 +141,9 @@ impl<'a> Channel<'a> {
         }
     }
 
+    /// Add a state handler table to a given channel. Returns the index number/priority of the table.
+    ///
+    /// See: [`switch_channel_add_state_handler`](../../freeswitch_sys/fn.switch_channel_add_state_handler.html).
     pub fn add_state_handler(
         &self,
         table: &'static StateHandlerTable,

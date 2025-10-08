@@ -10,6 +10,7 @@ use crate::prelude::*;
 use crate::channel::Channel;
 use crate::Frame;
 
+/// RAII guard that unlocks a session on drop.
 pub struct LocateGuard(Session);
 
 impl Drop for LocateGuard {
@@ -27,11 +28,11 @@ impl Deref for LocateGuard {
     }
 }
 
-// ------------
-//
+/// Wrapper around FreeSWITCH session.
 fs_new_type!(Session, *mut switch_core_session_t);
 
 impl Session {
+    /// Locate a session by UUID. See: [`switch_core_session_perform_locate`](../../freeswitch_sys/fn.switch_core_session_perform_locate.html).
     #[track_caller]
     pub fn locate(id: &str) -> Option<LocateGuard> {
         let s: CString = CString::new(id.to_owned()).unwrap();
@@ -48,10 +49,12 @@ impl Session {
         }
     }
 
+    /// Retrieve the unique identifier from a session. See: [`switch_core_session_get_uuid`](../../freeswitch_sys/fn.switch_core_session_get_uuid.html).
     pub fn get_uuid(&self) -> &CStr {
         unsafe { CStr::from_ptr(switch_core_session_get_uuid(self.as_ptr())) }
     }
 
+    /// Retrieve a reference to the channel object associated with a given session. See: [`switch_core_session_get_channel`](../../freeswitch_sys/fn.switch_core_session_get_channel.html).
     pub fn get_channel(&self) -> Option<Channel<'_>> {
         unsafe {
             let ptr = switch_core_session_get_channel(self.as_ptr());
@@ -62,6 +65,7 @@ impl Session {
         }
     }
 
+    /// Remove a media bug from the session. See: [`switch_core_media_bug_remove`](../../freeswitch_sys/fn.switch_core_media_bug_remove.html).
     pub fn remove_media_bug(&self, mut bug: MediaBugHandle) -> Result<()> {
         // SAFETY:
         // FS will nullify the media bug ptr, so all me
@@ -77,6 +81,37 @@ impl Session {
         }
     }
 
+    /// Add a media bug to the session. See: [`switch_core_media_bug_add`](../../freeswitch_sys/fn.switch_core_media_bug_add.html).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use freeswitch_rs::{Session, MediaBugFlags};
+    /// use freeswitch_sys::{switch_abc_type_t, switch_media_bug_flag_t};
+    /// use std::ffi::CString;
+    ///
+    /// let session = Session::locate("uuid").unwrap();
+    /// let handle = session.add_media_bug(
+    ///     Some(CString::new("my_function").unwrap()),
+    ///     None,
+    ///     switch_media_bug_flag_t(switch_media_bug_flag_t::SWITCH_MEDIA_BUG_FLAG_READ),
+    ///     |bug, abc_type| {
+    ///         match abc_type {
+    ///             switch_abc_type_t::SWITCH_ABC_TYPE_INIT => {
+    ///                 // Initialize
+    ///             }
+    ///             switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
+    ///                 // Read media
+    ///             }
+    ///             switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
+    ///                 // Cleanup
+    ///             }
+    ///             _ => {}
+    ///         }
+    ///         true
+    ///     }
+    /// ).unwrap();
+    /// ```
     pub fn add_media_bug<F>(
         &self,
         function: Option<CString>,
@@ -155,6 +190,7 @@ where
 }
 
 impl<'a> MediaBug<'a> {
+    /// Obtain the session from a media bug. See: [`switch_core_media_bug_get_session`](../../freeswitch_sys/fn.switch_core_media_bug_get_session.html).
     pub fn get_session(&self) -> &Session {
         // SAFETY
         // Media bug lifetime is tied to session, so should be safe
@@ -165,6 +201,7 @@ impl<'a> MediaBug<'a> {
         }
     }
 
+    /// Read a frame from the bug. See: [`switch_core_media_bug_read`](../../freeswitch_sys/fn.switch_core_media_bug_read.html).
     pub fn read_frame(&mut self, frame: &mut Frame) -> Result<usize> {
         let res = unsafe { switch_core_media_bug_read(self.0, &mut frame.0, true.into()) };
         if res != switch_status_t::SWITCH_STATUS_SUCCESS {
