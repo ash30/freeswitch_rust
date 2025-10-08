@@ -1,4 +1,5 @@
 # Unofficial FreeSWITCH Rust Bindings
+[![Build](https://github.com/ash30/freeswitch_rust/actions/workflows/build.yml/badge.svg)](https://ash30.github.io/freeswitch_rust/freeswitch_rs/index.html)
 
 **⚠️ Work in Progress** - This is an experimental, unofficial project to provide idiomatic Rust bindings for FreeSWITCH.
 
