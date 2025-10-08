@@ -51,7 +51,8 @@ pub mod prelude {
     pub use freeswitch_rs_macros::switch_module_define;
 
     // logging
-    pub use crate::fslog::FS_LOG;
+    pub use crate::fslog::session_log;
+
     pub use crate::fslog::SWITCH_CHANNEL_ID_EVENT;
     pub use crate::fslog::SWITCH_CHANNEL_ID_LOG;
     pub use crate::fslog::SWITCH_CHANNEL_ID_LOG_CLEAN;

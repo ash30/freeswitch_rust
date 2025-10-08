@@ -40,7 +40,7 @@ struct FSMod;
 
 impl LoadableModule for FSMod {
     fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
-        info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork loading");
+        info!("mod ws_fork loading");
         // TODO: make worker count configurable
         let Ok(runtime) = Builder::new_multi_thread()
             .enable_all()
@@ -54,7 +54,7 @@ impl LoadableModule for FSMod {
         module.add_api(api_main);
 
         if Event::reserve_subclass(MOD_WSFORK_EVENT).is_err() {
-            error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to register custom events");
+            error!("Failure to register custom events");
             return switch_status_t::SWITCH_STATUS_TERM;
         }
 
@@ -62,7 +62,7 @@ impl LoadableModule for FSMod {
     }
 
     fn shutdown() -> switch_status_t {
-        info!(channel=SWITCH_CHANNEL_ID_LOG; "mod ws_fork shutdown");
+        info!("mod ws_fork shutdown");
         let _ = Event::free_subclass(MOD_WSFORK_EVENT);
         switch_status_t::SWITCH_STATUS_SUCCESS
     }
@@ -70,11 +70,11 @@ impl LoadableModule for FSMod {
 
 #[switch_api_define(name = "wsfork", desc = "fork audio frames over websocket")]
 fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> switch_status_t {
-    debug!(channel=SWITCH_CHANNEL_ID_LOG; "mod wsfork cmd {}", &cmd);
+    debug!("mod wsfork cmd {}", &cmd);
 
     let cmd = match parse_args(cmd) {
         Err(e) => {
-            error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork invalid usage:\n{}", &e);
+            error!("mod wsfork invalid usage:\n{}", &e);
             return switch_status_t::SWITCH_STATUS_SUCCESS;
         }
         Ok(cmd) => cmd,
@@ -86,9 +86,14 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     } = cmd.common_args();
 
     let Some(session) = Session::locate(session_id) else {
-        error!(channel=SWITCH_CHANNEL_ID_SESSION; "Failed to find session {session_id}");
-        return switch_status_t::SWITCH_STATUS_SUCCESS;
+        error!("Failed to find session {session_id}");
+        return switch_status_t::SWITCH_STATUS_FALSE;
     };
+
+    debug!(
+        logger: session_log!(&session),
+        "mod hello_world cmd"
+    );
 
     let fork_name = CString::new(bug_name.to_owned()).unwrap();
     let s = session_id.to_owned();
@@ -129,7 +134,7 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     };
 
     if let Err(e) = res {
-        error!(channel=SWITCH_CHANNEL_ID_SESSION; "mod wsfork error: {}", &e);
+        error!(logger:session_log!(&session), "mod wsfork error: {}", &e);
         let _ = write!(stream, "-ERR, mod wsfork operation failed");
     } else {
         let _ = write!(stream, "+OK Success");
@@ -242,7 +247,7 @@ fn api_start(
                         .unwrap()
                         .block_on(async { timeout(Duration::from_secs(5), &mut send_task).await });
                     if res.is_err() {
-                        warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup sender task");
+                        warn!(logger:session_log!(bug.get_session()), "Failed to cleanup sender task");
                     }
                     // clean up smart pointers in channel
                     unsafe {
@@ -262,7 +267,7 @@ fn api_start(
                                 drop(weak_ref);
                             });
                         } else {
-                            warn!(channel=SWITCH_CHANNEL_ID_LOG; "Failed to cleanup Channel ptrs");
+                            warn!(logger:session_log!(bug.get_session()), "Failed to cleanup Channel ptrs");
                         }
                         return false;
                     };
@@ -274,18 +279,17 @@ fn api_start(
                     }
                     match tx.get_next_free_buffer() {
                         Err(WSForkerError::Full) => {
-                            warn!(channel=SWITCH_CHANNEL_ID_LOG; "Buffer full + Packets dropped")
+                            warn!(logger:session_log!(bug.get_session()), "Buffer full + Packets dropped");
                         }
                         Err(WSForkerError::Closed) => {
                             // WS has closed, stop bug
-                            debug!(channel=SWITCH_CHANNEL_ID_LOG; "WS Closed, Pruning bug");
+                            debug!(logger:session_log!(bug.get_session()), "WS Closed, Pruning bug");
                             return false;
                         }
                         Ok(mut b) => {
                             let mut f = Frame::new(&mut b);
-                            info!(channel=SWITCH_CHANNEL_ID_LOG; "data_size {}", f.data().len());
                             if let Err(e) = bug.read_frame(&mut f) {
-                                error!(channel=SWITCH_CHANNEL_ID_LOG; "Error Reading Frame {e}");
+                                error!(logger:session_log!(bug.get_session()), "Error Reading Frame {e}");
                                 return false;
                             }
                         }
@@ -305,7 +309,7 @@ fn api_start(
         channel.set_private_raw_ptr(fork_name, Weak::into_raw(data))
     };
     if let Err(err) = res {
-        error!(channel=SWITCH_CHANNEL_ID_LOG; "Failure to record bug in channel: {err}");
+        error!(logger:session_log!(&session), "Failure to record bug in channel: {err}");
         let _ = session.remove_media_bug(bug);
         return Err(err.into());
     }

@@ -1,5 +1,6 @@
 use freeswitch_sys::*;
 use std::ffi::c_void;
+use std::ffi::CStr;
 use std::ffi::CString;
 use std::ops::Deref;
 use std::ptr;
@@ -45,6 +46,10 @@ impl Session {
                 Some(LocateGuard(Session::from_ptr(ptr)))
             }
         }
+    }
+
+    pub fn get_uuid(&self) -> &CStr {
+        unsafe { CStr::from_ptr(switch_core_session_get_uuid(self.as_ptr())) }
     }
 
     pub fn get_channel(&self) -> Option<Channel<'_>> {
