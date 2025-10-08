@@ -5,7 +5,9 @@ use std::{
     mem::MaybeUninit,
 };
 
-use crate::{call_with_meta_prefix, channel::Channel, Result};
+use crate::prelude::*;
+
+use crate::channel::Channel;
 
 #[repr(transparent)]
 pub struct Event(*mut switch_event_t);

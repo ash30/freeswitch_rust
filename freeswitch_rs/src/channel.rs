@@ -3,9 +3,7 @@ use std::ffi::c_void;
 use std::ffi::CStr;
 use std::ptr;
 
-use crate::utils::fs_session_owned_type;
-use crate::utils::FSNewType;
-use crate::Result;
+use crate::prelude::*;
 
 pub use freeswitch_rs_macros::switch_state_handler;
 type StateHandlerTable = switch_state_handler_table_t;

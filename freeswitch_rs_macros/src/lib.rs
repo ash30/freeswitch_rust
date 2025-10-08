@@ -35,7 +35,7 @@ fn impl_switch_module_define(ast: &syn::ItemStruct, mod_name: &syn::Ident) -> To
                 pool: *mut freeswitch_rs::types::switch_memory_pool_t,
             ) -> freeswitch_rs::types::switch_status_t
             {
-                let _ = freeswitch_rs::log::set_logger(&freeswitch_rs::FS_LOG);
+                let _ = freeswitch_rs::log::set_logger(&freeswitch_rs::fslog::FS_LOG);
                 freeswitch_rs::log::set_max_level(freeswitch_rs::log::LevelFilter::Debug);
 
                 let ptr = freeswitch_rs::FSModuleInterface::create(#mod_name_string, pool);

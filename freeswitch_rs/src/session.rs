@@ -4,13 +4,10 @@ use std::ffi::CString;
 use std::ops::Deref;
 use std::ptr;
 
+use crate::prelude::*;
+
 use crate::channel::Channel;
-use crate::fs_new_type;
-use crate::fs_session_owned_type;
-use crate::utils::call_with_meta_suffix;
-use crate::utils::FSNewType;
 use crate::Frame;
-use crate::Result;
 
 pub struct LocateGuard(Session);
 

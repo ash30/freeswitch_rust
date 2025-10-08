@@ -1,13 +1,9 @@
-use crate::session::Session;
-use freeswitch_sys::switch_api_interface_t;
-use freeswitch_sys::switch_loadable_module_create_interface;
-use freeswitch_sys::switch_loadable_module_interface;
-use freeswitch_sys::switch_memory_pool_t;
-use freeswitch_sys::switch_module_interface_name_t;
-use freeswitch_sys::switch_status_t;
-use freeswitch_sys::switch_stream_handle_t;
 use std::ffi::CString;
 use std::io::ErrorKind;
+
+use crate::session::Session;
+use crate::types::*;
+use freeswitch_sys::switch_loadable_module_create_interface;
 
 #[repr(transparent)]
 pub struct StreamHandle(pub *mut switch_stream_handle_t);
@@ -62,7 +58,7 @@ pub trait LoadableModule {
 
 // We have to make ptr public to allow macros to create them...
 #[repr(transparent)]
-pub struct FSModuleInterface(pub *mut *mut switch_loadable_module_interface);
+pub struct FSModuleInterface(pub *mut *mut switch_loadable_module_interface_t);
 
 #[repr(transparent)]
 pub struct FSModulePool(pub *mut switch_memory_pool_t);
@@ -72,7 +68,7 @@ impl FSModuleInterface {
     pub unsafe fn create(
         name: &str,
         pool: *mut switch_memory_pool_t,
-    ) -> *mut switch_loadable_module_interface {
+    ) -> *mut switch_loadable_module_interface_t {
         let mod_name = CString::new(name.to_owned()).unwrap().into_raw();
         freeswitch_sys::switch_loadable_module_create_module_interface(pool, mod_name)
     }

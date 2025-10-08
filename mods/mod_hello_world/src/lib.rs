@@ -1,13 +1,12 @@
-use freeswitch_rs::core::*;
+use freeswitch_rs::core::Session;
 use freeswitch_rs::log::{debug, info};
-use freeswitch_rs::SWITCH_CHANNEL_ID_LOG;
-//use freeswitch_rs::*;
+use freeswitch_rs::prelude::*;
 
 #[switch_module_define(mod_hello_world)]
 struct FSModule;
 
 impl LoadableModule for FSModule {
-    fn load(module: FSModuleInterface, pool: FSModulePool) -> switch_status_t {
+    fn load(module: FSModuleInterface, _pool: FSModulePool) -> switch_status_t {
         info!(channel = SWITCH_CHANNEL_ID_LOG; "mod hello_world loading");
         module.add_api(hello_world);
         switch_status_t::SWITCH_STATUS_SUCCESS
