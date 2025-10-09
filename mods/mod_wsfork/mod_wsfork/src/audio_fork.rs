@@ -1,36 +1,14 @@
 use anyhow::Result;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocket, WebSocketError};
-use http_body_util::Empty;
-use hyper::{
-    Request,
-    body::Bytes,
-    header::{CONNECTION, UPGRADE},
-};
+use std::ops::DerefMut;
 use std::{fmt::Display, sync::Arc};
-use std::{fmt::Error, ops::DerefMut};
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
 use tokio::pin;
 use tokio::sync::Notify;
-use url::Url;
 
 const CANCEL_REASON: &str = "LOCAL_CANCEL";
-pub type WSRequest = Request<Empty<Bytes>>;
 
-fn create_request(url: Url) -> Result<WSRequest> {
-    Request::builder()
-        .method("GET")
-        .uri(url.as_str())
-        .header(UPGRADE, "websocket")
-        .header(CONNECTION, "upgrade")
-        .header(
-            "Sec-WebSocket-Key",
-            fastwebsockets::handshake::generate_key(),
-        )
-        .header("Sec-WebSocket-Version", "13")
-        .body(Empty::new())
-        .map_err(|e| e.into())
-}
 type DataBuffer = Vec<u8>;
 struct DataBufferFactory(usize);
 
@@ -75,17 +53,12 @@ impl<T> From<tokio_err::TrySendError<T>> for WSForkerError {
 }
 
 pub fn new_wsfork(
-    url: url::Url,
     frame_size: usize,
     buffer_duration: usize,
-    headers: impl FnOnce(&mut WSRequest),
 ) -> Result<(WSForkSender, WSForkReceiver)> {
     let (tx_audio, rx_audio) =
         thingbuf::mpsc::with_recycle(buffer_duration, DataBufferFactory(frame_size));
     let (tx_msg, rx_msg) = tokio::sync::mpsc::channel(buffer_duration);
-
-    let mut req = create_request(url)?;
-    (headers(&mut req));
 
     let cancel = Arc::new(Notify::new());
 
@@ -96,7 +69,6 @@ pub fn new_wsfork(
             cancel: cancel.clone(),
         },
         WSForkReceiver {
-            req,
             rx_audio,
             rx_msg,
             cancel,
@@ -107,7 +79,6 @@ pub fn new_wsfork(
 pub struct WSForkReceiver {
     rx_audio: thingbuf::mpsc::Receiver<DataBuffer, DataBufferFactory>,
     rx_msg: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    pub req: WSRequest,
     cancel: Arc<Notify>,
 }
 
@@ -257,7 +228,6 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use url::Url;
 
     #[derive(Clone)]
     struct EventCollector {
@@ -291,9 +261,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_websocket_connected_then_cancel() {
-            let url = Url::parse("ws://localhost:8080/test").unwrap();
-            let (sender, receiver) =
-                new_wsfork(url, 1024, Duration::from_millis(100), |_req| {}).unwrap();
+            let (sender, receiver) = new_wsfork(1024, 20).unwrap();
 
             let mock_stream = Builder::new()
                 // expect a close frame + 1000
@@ -334,9 +302,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_websocket_connected_then_io_error() {
-            let url = Url::parse("ws://localhost:8080/test").unwrap();
-            let (sender, receiver) =
-                new_wsfork(url, 1024, Duration::from_millis(100), |_req| {}).unwrap();
+            let (sender, receiver) = new_wsfork(1024, 20).unwrap();
 
             let mock_stream = Builder::new()
                 .read_error(std::io::Error::new(

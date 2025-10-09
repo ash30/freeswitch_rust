@@ -1,10 +1,20 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::{Command, FromArgMatches as _, Parser, Subcommand as _, ValueEnum};
+use http_body_util::Empty;
+use hyper::{
+    Method, Request,
+    body::Bytes,
+    header::{CONNECTION, UPGRADE},
+};
+use serde_json::Value;
+use url::Url;
+
+pub type WSRequest = Request<Empty<Bytes>>;
 
 #[derive(Parser, Debug)]
 pub(crate) struct Common {
     pub session_id: String,
-    pub bug_name: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -15,12 +25,50 @@ pub(crate) enum AudioMix {
     Mixed,
 }
 
+#[derive(Parser, Debug, Clone)]
+pub(crate) struct Endpoint {
+    pub url: Url,
+    pub headers: serde_json::Value,
+}
+
+impl Endpoint {
+    pub(crate) fn to_request(&self) -> Result<WSRequest> {
+        let mut req = Request::builder()
+            .method(Method::GET.as_str())
+            .uri(self.url.as_str())
+            .header(UPGRADE, "websocket")
+            .header(CONNECTION, "upgrade")
+            .header(
+                "Sec-WebSocket-Key",
+                fastwebsockets::handshake::generate_key(),
+            )
+            .header("Sec-WebSocket-Version", "13");
+
+        match &self.headers {
+            Value::Null => {}
+            Value::String(s) if s.is_empty() => {}
+            Value::Object(map) => {
+                for (k, v) in map {
+                    let Value::String(s) = v else {
+                        return Err(anyhow!(""));
+                    };
+                    req = req.header(k, s);
+                }
+            }
+            _ => return Err(anyhow!("")),
+        }
+
+        req.body(Empty::new()).map_err(|e| e.into())
+    }
+}
+
 #[derive(Parser, Debug)]
 pub(crate) enum Subcommands {
     Start {
         #[command(flatten)]
         fork: Common,
-        url: String,
+        #[command(flatten)]
+        endpoint: Endpoint,
         #[arg(value_enum, default_value_t)]
         mix: AudioMix,
         #[arg(default_value_t = false)]

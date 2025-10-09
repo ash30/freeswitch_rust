@@ -24,7 +24,7 @@ use freeswitch_rs::log::{debug, error, info, warn};
 use freeswitch_rs::prelude::*;
 use freeswitch_rs::types::{switch_abc_type_t, switch_status_t};
 
-use crate::arg_parse::{AudioMix, Common, Subcommands, parse_args};
+use crate::arg_parse::{AudioMix, Common, Endpoint, Subcommands, parse_args};
 use crate::audio_fork::{WSForkerError, new_wsfork};
 
 static RT: OnceLock<Runtime> = OnceLock::new();
@@ -80,10 +80,7 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
         Ok(cmd) => cmd,
     };
 
-    let Common {
-        session_id,
-        bug_name,
-    } = cmd.common_args();
+    let Common { session_id, name } = cmd.common_args();
 
     let Some(session) = Session::locate(session_id) else {
         error!("Failed to find session {session_id}");
@@ -95,19 +92,19 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
         "mod hello_world cmd"
     );
 
-    let fork_name = CString::new(bug_name.to_owned()).unwrap();
+    let fork_name = CString::new(name.to_owned()).unwrap();
     let s = session_id.to_owned();
 
     let res = match &cmd {
         Subcommands::Start {
-            url,
+            endpoint,
             start_paused,
             mix,
             ..
         } => api_start(
             &session,
             &fork_name,
-            url.to_owned(),
+            endpoint,
             *mix,
             *start_paused,
             move |event| response_handler(&s, event),
@@ -160,14 +157,11 @@ fn api_send_text(data: &PrivateSessionData, msg: String) -> Result<()> {
 fn api_start(
     session: &Session,
     fork_name: &CStr,
-    url: String,
+    endpoint: &Endpoint,
     audio_mix: AudioMix,
     start_paused: bool,
     response_handler: impl Fn(Body) + Send + Sync + 'static,
 ) -> Result<()> {
-    let url = url::Url::parse(&url)?;
-    let addr = url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))?;
-
     let read_impl = unsafe {
         freeswitch_sys::switch_core_session_get_read_codec(session.as_ptr())
             .as_ref()
@@ -185,12 +179,7 @@ fn api_start(
     let ms_per_packet = (read_impl.samples_per_packet / read_impl.samples_per_second) * 1000;
     let buffer_len = (buffer_duration.as_millis() as u32).div_ceil(ms_per_packet);
 
-    let (tx, rx) = new_wsfork(
-        url.clone(),
-        frame_size as usize,
-        buffer_len as usize,
-        |_| {},
-    )?;
+    let (tx, rx) = new_wsfork(frame_size as usize, buffer_len as usize)?;
 
     let mod_data = Arc::new(PrivateSessionData {
         tx,
@@ -198,9 +187,15 @@ fn api_start(
         paused: AtomicBool::new(start_paused),
     });
 
+    let addr = endpoint
+        .url
+        .socket_addrs(|| None)?
+        .pop()
+        .ok_or(anyhow!(""))?;
+    let req = endpoint.to_request()?;
+
     let mut send_task = RT.get().unwrap().spawn(async move {
         // TODO: Reconnection logic
-        let req = rx.req.clone();
         let res = async move {
             let stream = TcpStream::connect(addr).await?;
             let executor = TokioExecutor::new();
