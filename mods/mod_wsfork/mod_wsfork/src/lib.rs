@@ -1,39 +1,19 @@
 mod arg_parse;
 mod audio_fork;
+mod mod_wsfork_api;
 
-use anyhow::{Result, anyhow};
-use fastwebsockets::handshake;
-use hyper_util::rt::TokioExecutor;
-use tokio::net::TcpStream;
-use tokio::runtime::{Builder, Runtime};
-use tokio::time::{sleep, timeout};
-
-use wsfork_events::Body;
-pub use wsfork_events::MOD_WSFORK_EVENT;
-use wsfork_events::WSForkEvent;
-
-use std::ffi::{CStr, CString};
-use std::ops::Deref;
-use std::sync::{Arc, Mutex, OnceLock, Weak, atomic::AtomicBool, atomic::Ordering};
-use std::time::Duration;
-
-use freeswitch_rs::Frame;
-use freeswitch_rs::core::{MediaBugFlags, MediaBugHandle, Session};
-use freeswitch_rs::event::Event;
-use freeswitch_rs::log::{debug, error, info, warn};
+use crate::arg_parse::{Common, Subcommands, parse_args};
+use anyhow::anyhow;
 use freeswitch_rs::prelude::*;
-use freeswitch_rs::types::{switch_abc_type_t, switch_status_t};
+use freeswitch_rs::{core::Session, event::Event, log::*};
+use std::ffi::CStr;
+use std::sync::OnceLock;
+use tokio::runtime::{Builder, Runtime};
+use wsfork_events::{Body, WSForkEvent};
 
-use crate::arg_parse::{AudioMix, Common, Endpoint, Subcommands, parse_args};
-use crate::audio_fork::{WSForkerError, new_wsfork};
+pub use wsfork_events::MOD_WSFORK_EVENT;
 
 static RT: OnceLock<Runtime> = OnceLock::new();
-
-struct PrivateSessionData {
-    tx: audio_fork::WSForkSender,
-    bug: Mutex<Option<MediaBugHandle>>,
-    paused: AtomicBool,
-}
 
 #[switch_module_define(mod_wsfork)]
 struct FSMod;
@@ -47,7 +27,7 @@ impl LoadableModule for FSMod {
             .worker_threads(5)
             .build()
         else {
-            return switch_status_t::SWITCH_STATUS_GENERR;
+            return switch_status_t::SWITCH_STATUS_FALSE;
         };
         let _ = RT.set(runtime);
 
@@ -55,7 +35,7 @@ impl LoadableModule for FSMod {
 
         if Event::reserve_subclass(MOD_WSFORK_EVENT).is_err() {
             error!("Failure to register custom events");
-            return switch_status_t::SWITCH_STATUS_TERM;
+            return switch_status_t::SWITCH_STATUS_FALSE;
         }
 
         switch_status_t::SWITCH_STATUS_SUCCESS
@@ -83,17 +63,12 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     let Common { session_id, name } = cmd.common_args();
 
     let Some(session) = Session::locate(session_id) else {
-        error!("Failed to find session {session_id}");
+        error!(
+            "Failed to find session {}",
+            session_id.to_owned().into_string().unwrap_or_default()
+        );
         return switch_status_t::SWITCH_STATUS_FALSE;
     };
-
-    debug!(
-        logger: session_log!(&session),
-        "mod hello_world cmd"
-    );
-
-    let fork_name = CString::new(name.to_owned()).unwrap();
-    let s = session_id.to_owned();
 
     let res = match &cmd {
         Subcommands::Start {
@@ -101,33 +76,32 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
             start_paused,
             mix,
             ..
-        } => api_start(
-            &session,
-            &fork_name,
-            endpoint,
-            *mix,
-            *start_paused,
-            move |event| response_handler(&s, event),
-        ),
-        other_cmds => {
-            let data = unsafe {
-                session
-                    .get_channel()
-                    .and_then(|c| c.get_private_raw_ptr(&fork_name))
-                    .map(|ptr| Weak::from_raw(ptr as *const PrivateSessionData))
-                    // make sure to 'downgrade' weak ptr to avoid drop!
-                    .map(|p| (p.upgrade(), p.into_raw()))
-                    .and_then(|t| t.0)
-            };
-            data.map(|data| match other_cmds {
-                Subcommands::Stop { .. } => api_stop(&data),
-                Subcommands::Pause { .. } => api_pause(&data, true),
-                Subcommands::Resume { .. } => api_pause(&data, false),
-                Subcommands::SendText { text, .. } => api_send_text(&data, text.to_owned()),
+        } => {
+            let s = session_id.to_owned();
+            let runtime = RT.get().expect("async runtime has been initialised");
+            mod_wsfork_api::api_start(
+                &session,
+                name,
+                endpoint,
+                *mix,
+                *start_paused,
+                move |event| response_handler(&s, event),
+                runtime,
+            )
+        }
+        other_cmds => mod_wsfork_api::PrivateSessionData::get(&session, name)
+            .as_deref()
+            .map(|data| match other_cmds {
+                Subcommands::Stop { .. } => data.stop(),
+                Subcommands::Pause { .. } => data.pause(true),
+                Subcommands::Resume { .. } => data.pause(false),
+                Subcommands::SendText { text, .. } => data.send_text(text.to_owned()),
                 _ => Ok(()),
             })
-            .unwrap_or(Err(anyhow!("Failed to find fork for session {session_id}")))
-        }
+            .unwrap_or(Err(anyhow!(
+                "Failed to find fork for session {}",
+                session_id.to_owned().into_string().unwrap_or_default()
+            ))),
     };
 
     if let Err(e) = res {
@@ -139,183 +113,10 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     switch_status_t::SWITCH_STATUS_SUCCESS
 }
 
-fn api_pause(data: &PrivateSessionData, pause: bool) -> Result<()> {
-    data.paused.store(pause, Ordering::Relaxed);
-    Ok(())
-}
-
-fn api_stop(data: &PrivateSessionData) -> Result<()> {
-    data.tx.cancel();
-    Ok(())
-}
-
-fn api_send_text(data: &PrivateSessionData, msg: String) -> Result<()> {
-    data.tx.send_message(msg.into_bytes())?;
-    Ok(())
-}
-
-fn api_start(
-    session: &Session,
-    fork_name: &CStr,
-    endpoint: &Endpoint,
-    audio_mix: AudioMix,
-    start_paused: bool,
-    response_handler: impl Fn(Body) + Send + Sync + 'static,
-) -> Result<()> {
-    let read_impl = unsafe {
-        freeswitch_sys::switch_core_session_get_read_codec(session.as_ptr())
-            .as_ref()
-            .and_then(|c| c.implementation.as_ref())
-            .ok_or(anyhow!(""))?
-    };
-
-    let frame_size = match audio_mix {
-        AudioMix::Stereo => read_impl.decoded_bytes_per_packet * 2,
-        _ => read_impl.decoded_bytes_per_packet,
-    };
-
-    // Hardcode buffer length for now
-    let buffer_duration = Duration::from_millis(100);
-    let ms_per_packet = (read_impl.samples_per_packet / read_impl.samples_per_second) * 1000;
-    let buffer_len = (buffer_duration.as_millis() as u32).div_ceil(ms_per_packet);
-
-    let (tx, rx) = new_wsfork(frame_size as usize, buffer_len as usize)?;
-
-    let mod_data = Arc::new(PrivateSessionData {
-        tx,
-        bug: Mutex::new(None),
-        paused: AtomicBool::new(start_paused),
-    });
-
-    let addr = endpoint
-        .url
-        .socket_addrs(|| None)?
-        .pop()
-        .ok_or(anyhow!(""))?;
-    let req = endpoint.to_request()?;
-
-    let mut send_task = RT.get().unwrap().spawn(async move {
-        // TODO: Reconnection logic
-        let res = async move {
-            let stream = TcpStream::connect(addr).await?;
-            let executor = TokioExecutor::new();
-            let (ws, _) = handshake::client(&executor, req, stream).await?;
-            Ok::<_, anyhow::Error>(ws)
-        }
-        .await;
-
-        match res {
-            Err(e) => response_handler(wsfork_events::Body::Error {
-                desc: format!("{:#}", e),
-            }),
-            Ok(ws) => {
-                let _ = rx.run(ws, &response_handler).await;
-            }
-        };
-    });
-
-    let flags = match audio_mix {
-        AudioMix::Mono => MediaBugFlags::SMBF_READ_STREAM,
-        AudioMix::Mixed => MediaBugFlags::SMBF_READ_STREAM | MediaBugFlags::SMBF_WRITE_STREAM,
-        AudioMix::Stereo => {
-            MediaBugFlags::SMBF_READ_STREAM
-                | MediaBugFlags::SMBF_WRITE_STREAM
-                | MediaBugFlags::SMBF_STEREO
-        }
-    };
-
-    let bug = {
-        let fork_name = fork_name.to_owned();
-        let mod_data = mod_data.clone();
-
-        session.add_media_bug(None, None, flags, move |bug, abc_type| {
-            // For error handling, if we return false from closure
-            // FS will prune mal functioning bug ( ie remove it )
-            let PrivateSessionData { tx, paused, .. } = &mod_data.deref();
-            match abc_type {
-                switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
-                    // Wait for task to complete so we can ensure it
-                    // doesn't hold any session resources
-                    tx.cancel();
-                    let res = RT
-                        .get()
-                        .unwrap()
-                        .block_on(async { timeout(Duration::from_secs(5), &mut send_task).await });
-                    if res.is_err() {
-                        warn!(logger:session_log!(bug.get_session()), "Failed to cleanup sender task");
-                    }
-                    // clean up smart pointers in channel
-                    unsafe {
-                        if let Some(channel) = bug.get_session().get_channel()
-                            && let Some(ptr) = channel.get_private_raw_ptr(&fork_name)
-                        {
-                            let weak_ref = Weak::from_raw(ptr as *const PrivateSessionData);
-                            let _ = channel.set_private_raw_ptr(
-                                &fork_name,
-                                std::ptr::null::<PrivateSessionData>(),
-                            );
-                            RT.get().unwrap().spawn(async move {
-                                // we need to ensure no-one else is reading the ptr ....
-                                // current work around is to delay cleanup until way after
-                                // bug removal.
-                                sleep(Duration::from_secs(30)).await;
-                                drop(weak_ref);
-                            });
-                        } else {
-                            warn!(logger:session_log!(bug.get_session()), "Failed to cleanup Channel ptrs");
-                        }
-                        return false;
-                    };
-                }
-
-                switch_abc_type_t::SWITCH_ABC_TYPE_READ => {
-                    if paused.load(std::sync::atomic::Ordering::Relaxed) {
-                        return true;
-                    }
-                    match tx.get_next_free_buffer() {
-                        Err(WSForkerError::Full) => {
-                            warn!(logger:session_log!(bug.get_session()), "Buffer full + Packets dropped");
-                        }
-                        Err(WSForkerError::Closed) => {
-                            // WS has closed, stop bug
-                            debug!(logger:session_log!(bug.get_session()), "WS Closed, Pruning bug");
-                            return false;
-                        }
-                        Ok(mut b) => {
-                            let mut f = Frame::new(&mut b);
-                            if let Err(e) = bug.read_frame(&mut f) {
-                                error!(logger:session_log!(bug.get_session()), "Error Reading Frame {e}");
-                                return false;
-                            }
-                        }
-                    };
-                }
-                _ => {}
-            };
-            true // continue 
-        })
-    }?;
-
-    // Save mod data in channel so future cmds can use
-    mod_data.bug.lock().unwrap().replace(bug.clone());
-    let data = Arc::downgrade(&mod_data);
-    let res = unsafe {
-        let channel = session.get_channel().ok_or(anyhow!("Missing Channel"))?;
-        channel.set_private_raw_ptr(fork_name, Weak::into_raw(data))
-    };
-    if let Err(err) = res {
-        error!(logger:session_log!(&session), "Failure to record bug in channel: {err}");
-        let _ = session.remove_media_bug(bug);
-        return Err(err.into());
-    }
-
-    Ok(())
-}
-
-fn response_handler(session_id: &str, change: Body) {
+fn response_handler(session_id: &CStr, change: Body) {
     let _ = Event::new_custom_event(MOD_WSFORK_EVENT).and_then(|mut fs_event| {
         let data = WSForkEvent {
-            session: session_id.to_owned(),
+            session: session_id.to_owned().into_string().unwrap_or_default(),
             body: change,
         };
         if let Some(session) = Session::locate(session_id)

@@ -49,9 +49,6 @@ where
     }
 }
 
-/// Wrapper around FreeSWITCH channel.
-///
-/// Channel type lifetime is tied to session.
 fs_session_owned_type!(Channel, *mut switch_channel_t);
 type ChannelStateHandlerIndex = usize;
 

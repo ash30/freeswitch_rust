@@ -1,11 +1,17 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use fastwebsockets::handshake;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocket, WebSocketError};
+use hyper_util::rt::TokioExecutor;
+use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::{fmt::Display, sync::Arc};
 use thingbuf::Recycle;
 use thingbuf::mpsc::errors::TrySendError;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
 use tokio::pin;
 use tokio::sync::Notify;
+use wsfork_events::Body;
 
 const CANCEL_REASON: &str = "LOCAL_CANCEL";
 
@@ -43,6 +49,8 @@ impl From<TrySendError> for WSForkerError {
 }
 
 use tokio::sync::mpsc::error as tokio_err;
+
+use crate::arg_parse::WSRequest;
 impl<T> From<tokio_err::TrySendError<T>> for WSForkerError {
     fn from(value: tokio_err::TrySendError<T>) -> Self {
         match value {
@@ -82,32 +90,16 @@ pub struct WSForkReceiver {
     cancel: Arc<Notify>,
 }
 
-impl WSForkReceiver {
-    pub async fn run<S>(
-        self,
-        ws: WebSocket<S>,
-        on_event: impl Fn(wsfork_events::Body) + Clone,
-    ) -> std::result::Result<(), WebSocketError>
-    where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-    {
-        let res = self.run_loop(ws, on_event.clone()).await;
-        match &res {
-            Ok(()) => {}
-            Err(e) => on_event(wsfork_events::Body::Error {
-                desc: format!("{:#}", e),
-            }),
-        }
-        res
-    }
+type CloseReason = (Option<u16>, Option<String>);
 
-    async fn run_loop<S>(
+impl WSForkReceiver {
+    pub(crate) async fn run<S>(
         mut self,
         mut ws: WebSocket<S>,
         on_event: impl Fn(wsfork_events::Body),
-    ) -> std::result::Result<(), WebSocketError>
+    ) -> std::result::Result<CloseReason, WebSocketError>
     where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        S: AsyncRead + AsyncWrite + Unpin,
     {
         ws.set_auto_close(true);
         ws.set_auto_pong(true);
@@ -196,8 +188,7 @@ impl WSForkReceiver {
             },
         };
 
-        on_event(wsfork_events::Body::Closed { code, reason });
-        Ok(())
+        Ok((code, reason))
     }
 }
 
@@ -222,6 +213,38 @@ impl WSForkSender {
         self.cancel.notify_one();
     }
 }
+
+pub(crate) async fn run_io_loop(
+    addr: SocketAddr,
+    request: WSRequest,
+    fork: WSForkReceiver,
+    response_handler: impl Fn(Body) + Send + Sync + 'static + Clone,
+) {
+    let executor = TokioExecutor::new();
+    let res = if let Ok(stream) = TcpStream::connect(addr).await
+        && let Ok(ws) = handshake::client(&executor, request, stream).await
+    {
+        let _ = &response_handler(wsfork_events::Body::Connected {});
+        fork.run(ws.0, response_handler.clone())
+            .await
+            .map_err(|e| e.into())
+    } else {
+        Err(anyhow!(""))
+    };
+
+    match res {
+        Ok((code, reason)) => {
+            let _ = &response_handler(wsfork_events::Body::Closed { reason, code });
+        }
+        Err(e) => {
+            let _ = &response_handler(wsfork_events::Body::Error {
+                desc: format!("{:#}", e),
+            });
+        }
+    }
+}
+
+// ==================================================================
 
 #[cfg(test)]
 mod tests {

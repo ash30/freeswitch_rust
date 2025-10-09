@@ -1,3 +1,5 @@
+use std::{ffi::CString, net::SocketAddr};
+
 use anyhow::{Result, anyhow};
 use clap::{Command, FromArgMatches as _, Parser, Subcommand as _, ValueEnum};
 use http_body_util::Empty;
@@ -13,8 +15,8 @@ pub type WSRequest = Request<Empty<Bytes>>;
 
 #[derive(Parser, Debug)]
 pub(crate) struct Common {
-    pub session_id: String,
-    pub name: String,
+    pub session_id: CString,
+    pub name: CString,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -32,6 +34,10 @@ pub(crate) struct Endpoint {
 }
 
 impl Endpoint {
+    pub(crate) fn addr(&self) -> Result<SocketAddr> {
+        self.url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))
+    }
+
     pub(crate) fn to_request(&self) -> Result<WSRequest> {
         let mut req = Request::builder()
             .method(Method::GET.as_str())

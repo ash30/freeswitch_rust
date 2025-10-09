@@ -34,13 +34,12 @@ fs_new_type!(Session, *mut switch_core_session_t);
 impl Session {
     /// Locate a session by UUID. See: [`switch_core_session_perform_locate`](../../freeswitch_sys/fn.switch_core_session_perform_locate.html).
     #[track_caller]
-    pub fn locate(id: &str) -> Option<LocateGuard> {
-        let s: CString = CString::new(id.to_owned()).unwrap();
+    pub fn locate(id: &CStr) -> Option<LocateGuard> {
         // SAFETY
         // Locating will take a read lock of any found session
         // so the reference to session can live as long as you own the guard
         unsafe {
-            let ptr = call_with_meta_suffix!(switch_core_session_perform_locate, s.as_ptr());
+            let ptr = call_with_meta_suffix!(switch_core_session_perform_locate, id.as_ptr());
             if ptr.is_null() {
                 None
             } else {
