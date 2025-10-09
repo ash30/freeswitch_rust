@@ -94,12 +94,36 @@ impl<'a> Channel<'a> {
         }
     }
 
+    /// Remove private data from channel for the given key. See: [`switch_channel_set_private`](../../freeswitch_sys/fn.switch_channel_set_private.html).
+    pub fn remove_private<T: IntoChannelValue>(&self, key: &CStr) -> Result<()> {
+        unsafe {
+            match switch_channel_set_private(self.as_ptr(), key.as_ptr(), ptr::null()) {
+                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
+                other => Err(other.into()),
+            }
+        }
+    }
+
     /// Set private data on channel. See: [`switch_channel_set_private`](../../freeswitch_sys/fn.switch_channel_set_private.html).
     ///
     /// # Safety
     ///
-    /// Channels do not own or cleanup their data, so caller must ensure ptrs
-    /// to rust allocated structs are cleaned up IF required ie call drop!
+    /// Channels do not own or cleanup their data, so caller must ensure
+    /// rust allocated structs are cleaned up IF required ie anything on the heap
+    /// normally by using [`add_state_handler`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #[switch_state_handler]
+    /// pub fn cleanup(s: &Session) -> switch_status_t {
+    ///   unsafe {
+    ///     let ptr = s.get_channel().map(|c| c.get_private_raw_ptr());
+    ///     // Cast and drop ...
+    ///   }
+    /// }
+    /// ```
+    ///
     pub unsafe fn set_private_raw_ptr<T>(&self, key: &CStr, data: *const T) -> Result<()> {
         // SAFETY:
         // FS will take a lock on channel insert / read so its safe to call
@@ -131,19 +155,22 @@ impl<'a> Channel<'a> {
         }
     }
 
-    /// Remove private data from channel for the given key. See: [`switch_channel_set_private`](../../freeswitch_sys/fn.switch_channel_set_private.html).
-    pub fn remove_private<T: IntoChannelValue>(&self, key: &CStr) -> Result<()> {
-        unsafe {
-            match switch_channel_set_private(self.as_ptr(), key.as_ptr(), ptr::null()) {
-                switch_status_t::SWITCH_STATUS_SUCCESS => Ok(()),
-                other => Err(other.into()),
-            }
-        }
-    }
-
     /// Add a state handler table to a given channel. Returns the index number/priority of the table.
     ///
     /// See: [`switch_channel_add_state_handler`](../../freeswitch_sys/fn.switch_channel_add_state_handler.html).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #[switch_state_handler]
+    /// pub fn cleanup(s: &Session) -> switch_status_t {
+    ///    // cleanup ...
+    /// }
+    /// const STATE_HANDLERS: StateHandlerTable = StateHandlerTable {
+    ///     on_destroy: Some(cleanup),
+    ///     ..DEFAULT_STATE_HANDLER_TABLE
+    /// }
+    /// ```
     pub fn add_state_handler(
         &self,
         table: &'static StateHandlerTable,
