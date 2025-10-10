@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use fastwebsockets::handshake;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocket, WebSocketError};
 use hyper_util::rt::TokioExecutor;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::{fmt::Display, sync::Arc};
@@ -11,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::pin;
 use tokio::sync::Notify;
+use tokio_native_tls::native_tls::{TlsConnector, TlsConnectorBuilder};
 use wsfork_events::Body;
 
 const CANCEL_REASON: &str = "LOCAL_CANCEL";
@@ -214,14 +216,18 @@ impl WSForkSender {
     }
 }
 
-pub(crate) async fn run_io_loop(
-    addr: SocketAddr,
+pub(crate) async fn run_io_loop_with_stream<S, T>(
+    stream: S,
     request: WSRequest,
     fork: WSForkReceiver,
     response_handler: impl Fn(Body) + Send + Sync + 'static + Clone,
-) {
+) where
+    S: Future<Output = Result<T>>,
+    T: AsyncRead + AsyncWrite + 'static + Send + Unpin,
+{
     let executor = TokioExecutor::new();
-    let res = if let Ok(stream) = TcpStream::connect(addr).await
+
+    let res = if let Ok(stream) = stream.await
         && let Ok(ws) = handshake::client(&executor, request, stream).await
     {
         let _ = &response_handler(wsfork_events::Body::Connected {});
@@ -242,6 +248,41 @@ pub(crate) async fn run_io_loop(
             });
         }
     }
+}
+
+pub(crate) async fn run_io_loop(
+    addr: SocketAddr,
+    request: WSRequest,
+    fork: WSForkReceiver,
+    response_handler: impl Fn(Body) + Send + Sync + 'static + Clone,
+) {
+    let domain = request
+        .uri()
+        .host()
+        .map(|s| s.to_owned())
+        .unwrap_or_default();
+
+    match request.uri().scheme().map(|s| s.as_str()) {
+        #[cfg(feature = "tls")]
+        Some("wss") => {
+            let stream = async move {
+                let s = TcpStream::connect(addr).await?;
+                let connector = TlsConnector::new().map(tokio_native_tls::TlsConnector::from)?;
+                Ok::<_, anyhow::Error>(connector.connect(&domain, s).await?)
+            };
+            run_io_loop_with_stream(stream, request, fork, response_handler).await
+        }
+        #[cfg(not(feature = "tls"))]
+        Some("wss") => {
+            let _ = &response_handler(wsfork_events::Body::Error {
+                desc: "Attempted to start wss:// fork without TLS Support".to_string(),
+            });
+        }
+        _ => {
+            let stream = async move { TcpStream::connect(addr).await.map_err(|e| e.into()) };
+            run_io_loop_with_stream(stream, request, fork, response_handler).await
+        }
+    };
 }
 
 // ==================================================================

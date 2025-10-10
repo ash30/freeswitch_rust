@@ -14,16 +14,21 @@ freeswitch_rs = { path = "../../../freeswitch_rs" }
 clap = { version = "4.5.21", features = ["derive"]} 
 anyhow = "1.0.92"
 tokio = { version = "1.47.1", features = ["rt-multi-thread","net", "macros"]}
-ringbuf = "0.4.8"
 fastwebsockets = { version = "0.10.0", features = ["upgrade"]}
 hyper = "1.7.0"
 hyper-util = "0.1.16"
 http-body-util = "0.1.3"
 serde_json = "1.0.145"
-schemars = "1.0.4"
 serde = "1.0.225"
 thingbuf = "0.1.6"
 url = "2.5.7"
+tokio-native-tls = { version = "0.3.1", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+[features]
+tls = ["tokio-native-tls"]
+default = ["tls"]
+
+

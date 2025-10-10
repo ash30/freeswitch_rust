@@ -1,5 +1,7 @@
 use crate::arg_parse::{AudioMix, Endpoint};
-use crate::audio_fork::{WSForkReceiver, WSForkSender, WSForkerError, new_wsfork, run_io_loop};
+use crate::audio_fork::{
+    WSForkReceiver, WSForkSender, WSForkerError, new_wsfork, run_io_loop_with_stream, run_io_loop,
+};
 use anyhow::{Result, anyhow};
 use freeswitch_rs::Frame;
 use freeswitch_rs::core::{MediaBugFlags, MediaBugHandle, Session};
@@ -28,7 +30,7 @@ impl PrivateSessionData {
                 .and_then(|c| c.get_private_raw_ptr(fork_name))
                 .map(|ptr| Weak::from_raw(ptr as *const PrivateSessionData))
                 .map(|p| (p.clone(), p.into_raw()))
-                .and_then(|(p,_)| p.upgrade())
+                .and_then(|(p, _)| p.upgrade())
         }
     }
 
@@ -176,13 +178,16 @@ pub(crate) fn api_start(
     mod_data.bug.lock().unwrap().replace(bug.clone());
 
     let data = Arc::downgrade(&mod_data).into_raw();
-    match session.get_channel().map(|c| unsafe { c.set_private_raw_ptr(fork_name, data)}) {
+    match session
+        .get_channel()
+        .map(|c| unsafe { c.set_private_raw_ptr(fork_name, data) })
+    {
         Some(Ok(_)) => Ok(()),
         e => {
             let _ = session.remove_media_bug(bug);
             match e {
                 None => Err(anyhow!("Failed to find Channel")),
-                Some(res) => Ok(res?)
+                Some(res) => Ok(res?),
             }
         }
     }
