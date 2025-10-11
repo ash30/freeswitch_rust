@@ -35,7 +35,10 @@ pub(crate) struct Endpoint {
 
 impl Endpoint {
     pub(crate) fn addr(&self) -> Result<SocketAddr> {
-        self.url.socket_addrs(|| None)?.pop().ok_or(anyhow!(""))
+        self.url
+            .socket_addrs(|| None)?
+            .pop()
+            .ok_or(anyhow!("failed to find any socket_addrs"))
     }
 
     pub(crate) fn to_request(&self) -> Result<WSRequest> {
@@ -56,12 +59,12 @@ impl Endpoint {
             Value::Object(map) => {
                 for (k, v) in map {
                     let Value::String(s) = v else {
-                        return Err(anyhow!(""));
+                        return Err(anyhow!("Non String value found in header json"));
                     };
                     req = req.header(k, s);
                 }
             }
-            _ => return Err(anyhow!("")),
+            other => return Err(anyhow!("Non supported header json: {other}")),
         }
 
         req.body(Empty::new()).map_err(|e| e.into())
