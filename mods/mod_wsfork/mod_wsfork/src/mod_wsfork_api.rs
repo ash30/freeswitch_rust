@@ -123,6 +123,7 @@ pub(crate) fn api_start(
                 switch_abc_type_t::SWITCH_ABC_TYPE_CLOSE => {
                     // Wait for task to complete so we can ensure it
                     // doesn't hold any session resources
+                    let _ctx = runtime.enter();
                     tx.cancel();
                     if runtime
                         .block_on(timeout(Duration::from_secs(5), &mut send_task)).is_err() 
