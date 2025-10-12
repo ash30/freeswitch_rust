@@ -1,7 +1,6 @@
 use freeswitch_sys::switch_status_t;
 use std::{error::Error, fmt::Display};
 
-pub(crate) trait FSHandle<T: FSNewType> {}
 pub trait FSNewType {
     type Inner;
     fn from_ptr(ptr: Self::Inner) -> Self;

@@ -1,10 +1,10 @@
 use crate::arg_parse::{AudioMix, Endpoint};
 use crate::audio_fork::{
-    WSForkReceiver, WSForkSender, WSForkerError, new_wsfork, run_io_loop_with_stream, run_io_loop,
+    WSForkReceiver, WSForkSender, WSForkerError, new_wsfork, run_io_loop, 
 };
 use anyhow::{Result, anyhow};
 use freeswitch_rs::Frame;
-use freeswitch_rs::core::{MediaBugFlags, MediaBugHandle, Session};
+use freeswitch_rs::core::{MediaBugFlags, MediaBugHandle, Session, SessionExt};
 use freeswitch_rs::log::{debug, error, warn};
 use freeswitch_rs::prelude::*;
 use freeswitch_rs::types::switch_abc_type_t;
@@ -83,12 +83,15 @@ pub(crate) fn api_start(
     response_handler: impl Fn(Body) + Send + Sync + 'static + Clone,
     runtime: &'static runtime::Runtime,
 ) -> Result<()> {
+    debug!(logger:session_log!(session), "Getting Read Impl");
     let read_impl = unsafe {
         freeswitch_sys::switch_core_session_get_read_codec(session.as_ptr())
             .as_ref()
             .and_then(|c| c.implementation.as_ref())
             .ok_or(anyhow!(""))?
     };
+
+    debug!(logger:session_log!(session), "Init");
     let (data, rx) = PrivateSessionData::init(read_impl, audio_mix)?;
     let _ = data.pause(start_paused);
     let mod_data = Arc::new(data);
@@ -97,6 +100,7 @@ pub(crate) fn api_start(
     let req = endpoint.to_request()?;
     let mut send_task = runtime.spawn(run_io_loop(addr, req, rx, response_handler));
 
+    debug!(logger:session_log!(session), "Attaching Bug");
     let flags = match audio_mix {
         AudioMix::Mono => MediaBugFlags::SMBF_READ_STREAM,
         AudioMix::Mixed => MediaBugFlags::SMBF_READ_STREAM | MediaBugFlags::SMBF_WRITE_STREAM,
@@ -119,7 +123,7 @@ pub(crate) fn api_start(
                     if runtime
                         .block_on(timeout(Duration::from_secs(5), &mut send_task)).is_err() 
                     {
-                        warn!(logger:session_log!(bug.get_session()), "Failed to cleanup sender task");
+                        warn!(logger:session_log!(&bug.get_session()), "Failed to cleanup sender task");
                         send_task.abort();
                     }
                     // clean up smart pointers in channel
@@ -140,7 +144,7 @@ pub(crate) fn api_start(
                                 drop(weak_ref);
                             });
                         } else {
-                            warn!(logger:session_log!(bug.get_session()), "Failed to cleanup Channel ptrs");
+                            warn!(logger:session_log!(&bug.get_session()), "Failed to cleanup Channel ptrs");
                         }
                         return false;
                     };
@@ -152,17 +156,17 @@ pub(crate) fn api_start(
                     }
                     match tx.get_next_free_buffer() {
                         Err(WSForkerError::Full) => {
-                            warn!(logger:session_log!(bug.get_session()), "Buffer full + Packets dropped");
+                            warn!(logger:session_log!(&bug.get_session()), "Buffer full + Packets dropped");
                         }
                         Err(WSForkerError::Closed) => {
                             // WS has closed, stop bug
-                            debug!(logger:session_log!(bug.get_session()), "WS Closed, Pruning bug");
+                            debug!(logger:session_log!(&bug.get_session()), "WS Closed, Pruning bug");
                             return false;
                         }
                         Ok(mut b) => {
                             let mut f = Frame::new(&mut b);
                             if let Err(e) = bug.read_frame(&mut f) {
-                                error!(logger:session_log!(bug.get_session()), "Error Reading Frame {e}");
+                                error!(logger:session_log!(&bug.get_session()), "Error Reading Frame {e}");
                                 return false;
                             }
                         }
@@ -174,7 +178,7 @@ pub(crate) fn api_start(
         })
     }?;
 
-    // Save mod data in channel so future cmds can use
+    debug!(logger:session_log!(session), "saving bug in channel");
     mod_data.bug.lock().unwrap().replace(bug.clone());
 
     let data = Arc::downgrade(&mod_data).into_raw();

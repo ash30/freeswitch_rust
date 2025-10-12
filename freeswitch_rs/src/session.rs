@@ -28,8 +28,29 @@ impl Deref for LocateGuard {
     }
 }
 
-/// Wrapper around FreeSWITCH session.
 fs_new_type!(Session, *mut switch_core_session_t);
+fs_session_owned_type!(SessionHandle, *mut switch_core_session_t);
+
+pub trait SessionExt: FSNewType<Inner = *mut switch_core_session_t> {
+    /// Retrieve the unique identifier from a session. See: [`switch_core_session_get_uuid`](../../freeswitch_sys/fn.switch_core_session_get_uuid.html).
+    fn get_uuid(&self) -> &CStr {
+        unsafe { CStr::from_ptr(switch_core_session_get_uuid(self.as_ptr())) }
+    }
+
+    /// Retrieve a reference to the channel object associated with a given session. See: [`switch_core_session_get_channel`](../../freeswitch_sys/fn.switch_core_session_get_channel.html).
+    fn get_channel(&self) -> Option<Channel<'_>> {
+        unsafe {
+            let ptr = switch_core_session_get_channel(self.as_ptr());
+            if ptr.is_null() {
+                return None;
+            };
+            Some(Channel::from_ptr(ptr))
+        }
+    }
+}
+
+impl SessionExt for Session {}
+impl<'a> SessionExt for SessionHandle<'a> {}
 
 impl Session {
     /// Locate a session by UUID. See: [`switch_core_session_perform_locate`](../../freeswitch_sys/fn.switch_core_session_perform_locate.html).
@@ -45,22 +66,6 @@ impl Session {
             } else {
                 Some(LocateGuard(Session::from_ptr(ptr)))
             }
-        }
-    }
-
-    /// Retrieve the unique identifier from a session. See: [`switch_core_session_get_uuid`](../../freeswitch_sys/fn.switch_core_session_get_uuid.html).
-    pub fn get_uuid(&self) -> &CStr {
-        unsafe { CStr::from_ptr(switch_core_session_get_uuid(self.as_ptr())) }
-    }
-
-    /// Retrieve a reference to the channel object associated with a given session. See: [`switch_core_session_get_channel`](../../freeswitch_sys/fn.switch_core_session_get_channel.html).
-    pub fn get_channel(&self) -> Option<Channel<'_>> {
-        unsafe {
-            let ptr = switch_core_session_get_channel(self.as_ptr());
-            if ptr.is_null() {
-                return None;
-            };
-            Some(Channel::from_ptr(ptr))
         }
     }
 
@@ -190,13 +195,14 @@ where
 
 impl<'a> MediaBug<'a> {
     /// Obtain the session from a media bug. See: [`switch_core_media_bug_get_session`](../../freeswitch_sys/fn.switch_core_media_bug_get_session.html).
-    pub fn get_session(&self) -> &Session {
+    pub fn get_session(&self) -> SessionHandle<'a> {
         // SAFETY
         // Media bug lifetime is tied to session, so should be safe
         // assuming media bug ptr is ok which in the context of bug callback, should be
         unsafe {
             let ptr = switch_core_media_bug_get_session(self.0);
-            &*(ptr as *mut Session)
+            debug_assert!(!ptr.is_null(), "parent session ptr is not null");
+            SessionHandle::from_ptr(ptr)
         }
     }
 

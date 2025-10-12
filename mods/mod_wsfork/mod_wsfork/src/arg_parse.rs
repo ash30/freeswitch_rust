@@ -16,7 +16,7 @@ pub type WSRequest = Request<Empty<Bytes>>;
 #[derive(Parser, Debug)]
 pub(crate) struct Common {
     pub session_id: CString,
-    pub name: CString,
+    pub fork_id: CString,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]

@@ -2,6 +2,11 @@ use freeswitch_sys::{switch_log_level_t, switch_log_printf, switch_text_channel_
 use log::Log;
 use std::{ffi::CString, ptr::null};
 
+use crate::{
+    core::{Session, SessionExt},
+    utils::FSNewType,
+};
+
 #[repr(transparent)]
 pub struct FSTextChannel(switch_text_channel_t);
 
@@ -20,16 +25,28 @@ macro_rules! logging_macro {
     };
 }
 
+#[doc(hidden)]
+pub fn convert_session<T: SessionExt>(s: &T) -> *const ::std::os::raw::c_char {
+    s.as_ptr().cast()
+}
+
+#[doc(hidden)]
+pub fn convert_session_clean<T: SessionExt>(s: &T) -> *const ::std::os::raw::c_char {
+    s.get_uuid().as_ptr().cast()
+}
+
 logging_macro!(channel_log, SWITCH_CHANNEL_ID_LOG, || null().cast());
 logging_macro!(channel_log_clean, SWITCH_CHANNEL_ID_LOG_CLEAN, || null()
     .cast());
-logging_macro!(session_log, SWITCH_CHANNEL_ID_SESSION, |s: &Session| s
-    .as_ptr()
-    .cast());
+logging_macro!(
+    session_log,
+    SWITCH_CHANNEL_ID_SESSION,
+    freeswitch_rs::fslog::convert_session
+);
 logging_macro!(
     session_log_clean,
     SWITCH_CHANNEL_ID_SESSION,
-    |s: &Session| s.get_uuid().as_ptr()
+    freeswitch_rs::fslog::convert_session_clean
 );
 
 pub const SWITCH_CHANNEL_ID_LOG: FSTextChannel =

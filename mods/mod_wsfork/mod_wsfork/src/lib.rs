@@ -5,8 +5,13 @@ mod mod_wsfork_api;
 use crate::arg_parse::{Common, Subcommands, parse_args};
 use anyhow::anyhow;
 use freeswitch_rs::prelude::*;
-use freeswitch_rs::{core::Session, event::Event, log::*};
+use freeswitch_rs::{
+    core::{Session, SessionExt},
+    event::Event,
+    log::*,
+};
 use std::ffi::CStr;
+use std::ops::Deref;
 use std::sync::OnceLock;
 use tokio::runtime::{Builder, Runtime};
 use wsfork_events::{Body, WSForkEvent};
@@ -60,14 +65,17 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
         Ok(cmd) => cmd,
     };
 
-    let Common { session_id, name } = cmd.common_args();
+    let Common {
+        session_id,
+        fork_id,
+    } = cmd.common_args();
 
     let Some(session) = Session::locate(session_id) else {
         error!(
             "Failed to find session {}",
             session_id.to_owned().into_string().unwrap_or_default()
         );
-        return switch_status_t::SWITCH_STATUS_FALSE;
+        return switch_status_t::SWITCH_STATUS_SUCCESS;
     };
 
     let res = match &cmd {
@@ -81,15 +89,15 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
             let runtime = RT.get().expect("async runtime has been initialised");
             mod_wsfork_api::api_start(
                 &session,
-                name,
+                fork_id,
                 endpoint,
                 *mix,
-                *start_paused,
+                start_paused.unwrap_or(false),
                 move |event| response_handler(&s, event),
                 runtime,
             )
         }
-        other_cmds => mod_wsfork_api::PrivateSessionData::get(&session, name)
+        other_cmds => mod_wsfork_api::PrivateSessionData::get(&session, fork_id)
             .as_deref()
             .map(|data| match other_cmds {
                 Subcommands::Stop { .. } => data.stop(),
@@ -105,11 +113,12 @@ fn api_main(cmd: &str, _session: Option<&Session>, mut stream: StreamHandle) -> 
     };
 
     if let Err(e) = res {
-        error!(logger:session_log!(&session), "mod wsfork error: {}", &e);
+        error!(logger:session_log!(session.deref()), "mod wsfork error: {}", &e);
         let _ = write!(stream, "-ERR, mod wsfork operation failed");
     } else {
         let _ = write!(stream, "+OK Success");
     }
+
     switch_status_t::SWITCH_STATUS_SUCCESS
 }
 
