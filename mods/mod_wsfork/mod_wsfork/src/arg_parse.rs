@@ -86,10 +86,9 @@ pub(crate) enum Subcommands {
         fork: Common,
         #[command(flatten)]
         endpoint: Endpoint,
-        #[arg(value_enum, default_value_t)]
+        #[arg(value_enum)]
         mix: AudioMix,
-        #[arg(default_value_t = false)]
-        start_paused: bool,
+        start_paused: Option<bool>,
     },
     Stop {
         #[command(flatten)]
