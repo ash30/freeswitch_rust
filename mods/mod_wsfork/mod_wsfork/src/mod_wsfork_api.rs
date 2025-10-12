@@ -44,8 +44,12 @@ impl PrivateSessionData {
         };
         // Hardcode buffer length for now
         let buffer_duration = Duration::from_millis(100);
-        let ms_per_packet = (read_impl.samples_per_packet / read_impl.samples_per_second) * 1000;
-        let buffer_len = (buffer_duration.as_millis() as u32).div_ceil(ms_per_packet);
+        let buffer_len = read_impl
+            .microseconds_per_packet
+            .try_into()
+            .map(|n: u128| buffer_duration.as_micros().div_ceil(n.max(1)))
+            .map(|n| n.clamp(1, 5))
+            .unwrap_or(3);
 
         let (tx, rx) = new_wsfork(frame_size as usize, buffer_len as usize)?;
 
