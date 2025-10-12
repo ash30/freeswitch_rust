@@ -1,4 +1,4 @@
-use std::{ffi::CString, net::SocketAddr};
+use std::{ffi::CString, net::SocketAddr, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use clap::{Command, FromArgMatches as _, Parser, Subcommand as _, ValueEnum};
@@ -30,7 +30,7 @@ pub(crate) enum AudioMix {
 #[derive(Parser, Debug, Clone)]
 pub(crate) struct Endpoint {
     pub url: Url,
-    pub headers: serde_json::Value,
+    pub headers: String,
 }
 
 impl Endpoint {
@@ -53,7 +53,8 @@ impl Endpoint {
             )
             .header("Sec-WebSocket-Version", "13");
 
-        match &self.headers {
+        let headers = serde_json::Value::from_str(&self.headers)?;
+        match headers {
             Value::Null => {}
             Value::String(s) if s.is_empty() => {}
             Value::Object(map) => {
@@ -64,7 +65,14 @@ impl Endpoint {
                     req = req.header(k, s);
                 }
             }
-            other => return Err(anyhow!("Non supported header json: {other}")),
+            other => {
+                return Err(anyhow!(
+                    "Non supported header json: {other}, is_object:{}, is_string:{}, is_null:{}",
+                    other.is_object(),
+                    other.is_string(),
+                    other.is_null(),
+                ));
+            }
         }
 
         req.body(Empty::new()).map_err(|e| e.into())
