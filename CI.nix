@@ -11,9 +11,7 @@ in
 pkgs.mkShell {
   inputsFrom = [ (pkgs.callPackage ./default.nix { inherit rustPlatform; }) ];
   buildInputs = [
-    (import (builtins.fetchGit { url = "https://github.com/ash30/freeswitch"; ref =  "build/github_action_debug";  rev = "e9c3590a5cd247e5b490d9b0e939745bd39d224b";}) {})
+    (import (builtins.fetchGit { url = "https://github.com/ash30/freeswitch"; ref =  "nix";  rev = "afc4a0997c439f71731a85a1f1f0b8c85262b792";}) {})
     pkgs.pkg-config
-    pkgs.rust-bin.stable.latest.rustfmt       # Formatter
-    pkgs.rust-bin.stable.latest.clippy        # Linter
   ];
 }
